@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MutableRefObject, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
+import { FieldMultipleChoice, JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronLeftRounded, ChevronRightRounded,
   CircleRounded, ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, HubRounded, LightModeRounded, PsychologyRounded,
@@ -8,7 +8,7 @@ import {
   TerminalRounded,
 } from "@mui/icons-material";
 import {
-  Alert, Avatar, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton, InputAdornment,
+  Alert, Avatar, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton, InputAdornment,
   LinearProgress, MenuItem, Paper, Select, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiSession, type GatewayStatus } from "./api";
@@ -202,11 +202,12 @@ function toolActivityPreview(message: ApiMessage) {
 }
 
 type SendShortcut = "enter" | "ctrl-enter";
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, onShortcutChange, onSend, onAbort, onFork }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, onShortcutChange, onSend, onAbort, onFork }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
-  scrollPositions: MutableRefObject<Map<string, number>>; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void;
+  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [modelEditorOpen, setModelEditorOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const restoredRef = useRef(false); const nearBottomRef = useRef(true);
   useEffect(() => { if (loading || !session) return; const list = listRef.current; if (!list) return; const frame = requestAnimationFrame(() => { const saved = scrollPositions.current.get(session.key); const maximum = Math.max(0, list.scrollHeight - list.clientHeight); list.scrollTop = saved === undefined ? maximum : Math.min(saved, maximum); nearBottomRef.current = maximum - list.scrollTop < 80; restoredRef.current = true; }); return () => cancelAnimationFrame(frame); }, [loading, session?.key, scrollPositions]);
@@ -222,7 +223,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     <Box className="message-list" ref={listRef} onScroll={(event) => { const list = event.currentTarget; scrollPositions.current.set(session.key, list.scrollTop); nearBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop < 80; }}>{loading ? <Box className="loading-chat"><CircularProgress size={28} /></Box> : groupDisplayMessages(messages).map((item) => item.kind === "activity" ? <TechnicalActivity key={item.id} messages={item.messages} /> : item.kind === "thinking" ? <ThinkingActivity key={item.id} content={item.content} /> : <MessageBubble key={item.message.id} message={item.message} agent={agent} />)}
       {streamText && <MessageBubble message={{ id: "live-stream", role: "assistant", author: agent.name, content: streamText }} agent={agent} />}</Box>
     <Box component="form" onSubmit={send} className="composer-wrap"><Paper className="composer" elevation={0}><TextField multiline maxRows={5} fullWidth disabled={loading || processing} placeholder={loading ? "Carregando histórico…" : processing ? "Aguarde o término do processamento…" : `Conversar com ${agent.name} nesta sessão…`} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(event) => { if (processing || loading || event.key !== "Enter" || event.nativeEvent.isComposing) return; const ctrl = event.ctrlKey || event.metaKey; if (sendShortcut === "enter" && ctrl) { event.preventDefault(); const textarea = event.target as HTMLTextAreaElement; const start = textarea.selectionStart; const end = textarea.selectionEnd; setDraft((current) => `${current.slice(0, start)}\n${current.slice(end)}`); requestAnimationFrame(() => textarea.setSelectionRange(start + 1, start + 1)); return; } const shouldSend = sendShortcut === "enter" ? !event.shiftKey : ctrl; if (shouldSend) { event.preventDefault(); void submitDraft(); } }} variant="standard" InputProps={{ disableUnderline: true }} />
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 1 }}><Stack direction="row" spacing={0.7} alignItems="center"><Chip size="small" label={displayModel(session, agent)} /><Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>{processing && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}</Stack>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 1 }}><Stack direction="row" spacing={0.7} alignItems="center"><ClickAwayListener onClickAway={() => setModelEditorOpen(false)}>{modelEditorOpen ? <Box sx={{ width: 340, maxWidth: "45vw" }}><FieldMultipleChoice name="model" label="Modelo" value={displayModel(session, agent)} disabled={processing || loading}
+        config={{ data: models.map((model) => ({ id: `${model.provider}/${model.id}`, label: `${model.name} · ${model.provider}/${model.id}` })), idField: "id", displayField: "label", noOptionsText: "Nenhum modelo disponível" }}
+        onChange={(_name, value) => { setModelEditorOpen(false); const ref = String(value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} /></Box> : <Chip size="small" label={displayModel(session, agent)} onClick={() => setModelEditorOpen(true)} sx={{ cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }} />}</ClickAwayListener><Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>{processing && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}</Stack>
       <Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || processing || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
 }
@@ -350,7 +353,7 @@ function ConsoleApp() {
     {!connected ? <GatewayOfflinePane status={status} /> : <>
       {displayLayout.sessionsVisible && <SessionList agent={selectedAgent} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore} onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create()} onLoadMore={loadMoreSessions} onRename={() => void rename()} onDelete={() => void deleteSession()} onHide={() => setLayout((current) => ({ ...current, sessionsVisible: false }))} />}
       {displayLayout.sessionsVisible && <ResizeHandle onResize={(delta) => setLayout((current) => ({ ...current, sessionsWidth: clamp(current.sessionsWidth + delta, 230, 520) }))} />}
-      <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} />
+      <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} />
       {displayLayout.detailsVisible && <ResizeHandle direction={-1} onResize={(delta) => setLayout((current) => ({ ...current, detailsWidth: clamp(current.detailsWidth + delta, 220, 460) }))} />}
       {displayLayout.detailsVisible && <DetailPanel agent={selectedAgent} session={selectedSession} onHide={() => setLayout((current) => ({ ...current, detailsVisible: false }))} />}
     </>}
