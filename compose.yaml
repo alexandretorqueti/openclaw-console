@@ -16,5 +16,7 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?Defina OPENCLAW_GATEWAY_TOKEN no .env}
       OPENCLAW_DEVICE_IDENTITY_PATH: /data/state/device.json
       OPENCLAW_AGENT_WORKSPACE_ROOT: ${OPENCLAW_AGENT_WORKSPACE_ROOT:-/data/.openclaw}
+      OPENCLAW_SHARED_PROJECTS_PATH: ${OPENCLAW_SHARED_PROJECTS_PATH:-/data/workspace/projects}
     volumes:
       - ./state:/data/state
+      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/docker/openclaw/openclaw_state}:/data/.openclaw:rw,z

@@ -16,6 +16,7 @@ import {
 import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } from "@alexandretorqueti/openclaw-gateway-client";
 import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeSessions, record } from "./normalizers.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
+import { ensureProjectsLink } from "./workspace-project-link.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
@@ -23,6 +24,7 @@ const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
+const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
 const startedAt = Date.now();
@@ -134,7 +136,12 @@ app.get("/api/models", async () => {
   });
   return ModelsResponseSchema.parse({ models });
 });
-app.post("/api/agents", async (request) => { const body = parse(CreateAgentRequestSchema, request.body); const payload = record(await rpc("agents.create", body)); return { ok: true as const, agentId: typeof payload.agentId === "string" ? payload.agentId : body.name }; });
+app.post("/api/agents", async (request) => {
+  const body = parse(CreateAgentRequestSchema, request.body);
+  await ensureProjectsLink({ workspace: body.workspace, workspaceRoot: defaultAgentWorkspaceRoot, projectsPath: sharedProjectsPath });
+  const payload = record(await rpc("agents.create", body));
+  return { ok: true as const, agentId: typeof payload.agentId === "string" ? payload.agentId : body.name };
+});
 app.patch("/api/agents", async (request) => { const body = parse(UpdateAgentRequestSchema, request.body); await rpc("agents.update", body); return { ok: true as const, agentId: body.agentId }; });
 app.delete("/api/agents", async (request) => { const body = parse(DeleteAgentRequestSchema, request.body); if (body.agentId === "main") throw Object.assign(new Error('O agente "main" não pode ser excluído'), { code: "INVALID_REQUEST" }); const payload = record(await rpc("agents.delete", body)); return { ok: true as const, agentId: body.agentId, ...(typeof payload.removedBindings === "number" ? { removedBindings: payload.removedBindings } : {}) }; });
 const AgentIdParamsSchema = z.object({ agentId: z.string().trim().min(1) }).strict();
