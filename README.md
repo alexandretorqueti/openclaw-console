@@ -35,10 +35,12 @@ Variáveis do servidor:
 OPENCLAW_GATEWAY_URL=ws://openclaw:18789
 OPENCLAW_GATEWAY_TOKEN=seu-token
 OPENCLAW_AGENT_WORKSPACE_ROOT=/data/.openclaw
+OPENCLAW_OLLAMA_URL=http://127.0.0.1:11434
 PORT=47831
 ```
 
 `OPENCLAW_AGENT_WORKSPACE_ROOT` define somente a raiz sugerida pelo Console para novos agentes. O workspace efetivo continua sendo persistido por agente no Gateway e pode ser alterado pela tela de administração.
+`OPENCLAW_OLLAMA_URL` é opcional e serve para enriquecer a lista com o tamanho em disco dos modelos locais.
 
 ## Docker
 

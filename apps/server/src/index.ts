@@ -19,6 +19,7 @@ import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
+const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
@@ -95,6 +96,20 @@ function canonicalAgentId(sessionKey: string, fallback?: string) {
   if (!sessionKey.startsWith("agent:")) return fallback;
   return sessionKey.split(":")[1] || fallback;
 }
+async function ollamaModelSizes() {
+  const sizes = new Map<string, number>();
+  try {
+    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2_500) });
+    if (!response.ok) return sizes;
+    const payload = record(await response.json());
+    const models = Array.isArray(payload.models) ? payload.models : [];
+    for (const value of models) {
+      const model = record(value); const name = typeof model.name === "string" ? model.name : typeof model.model === "string" ? model.model : undefined;
+      if (name && typeof model.size === "number" && Number.isFinite(model.size) && model.size >= 0) sizes.set(name.toLowerCase(), model.size);
+    }
+  } catch { /* O tamanho é opcional; o catálogo do Gateway continua disponível. */ }
+  return sizes;
+}
 
 app.setErrorHandler((error, _request, reply) => {
   if (error instanceof ZodError) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "Invalid request", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) } });
@@ -108,12 +123,14 @@ app.get("/healthz", async (_request, reply) => reply.code(gatewayReady() ? 200 :
 app.get("/api/status", async () => status());
 app.get("/api/agents", async () => normalizeAgents(await rpc("agents.list", {})));
 app.get("/api/models", async () => {
-  const payload = record(await rpc("models.list", { view: "configured" }));
+  const [payloadRaw, ollamaSizes] = await Promise.all([rpc("models.list", { view: "configured" }), ollamaModelSizes()]);
+  const payload = record(payloadRaw);
   const rows = Array.isArray(payload.models) ? payload.models : [];
   const models = rows.flatMap((value) => {
     const row = record(value);
     if (typeof row.id !== "string" || typeof row.name !== "string" || typeof row.provider !== "string") return [];
-    return [{ id: row.id, name: row.name, provider: row.provider, ...(typeof row.alias === "string" ? { alias: row.alias } : {}), ...(typeof row.available === "boolean" ? { available: row.available } : {}), ...(typeof row.contextWindow === "number" ? { contextWindow: row.contextWindow } : {}), ...(typeof row.reasoning === "boolean" ? { reasoning: row.reasoning } : {}) }];
+    const sizeBytes = row.provider.toLowerCase() === "ollama" ? ollamaSizes.get(row.id.toLowerCase()) : undefined;
+    return [{ id: row.id, name: row.name, provider: row.provider, ...(typeof row.alias === "string" ? { alias: row.alias } : {}), ...(typeof row.available === "boolean" ? { available: row.available } : {}), ...(typeof row.contextWindow === "number" ? { contextWindow: row.contextWindow } : {}), ...(sizeBytes !== undefined ? { sizeBytes } : {}), ...(typeof row.reasoning === "boolean" ? { reasoning: row.reasoning } : {}) }];
   });
   return ModelsResponseSchema.parse({ models });
 });

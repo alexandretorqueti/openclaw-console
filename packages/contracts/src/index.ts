@@ -95,6 +95,7 @@ export const ModelChoiceSchema = z.object({
   alias: NonEmptyStringSchema.optional(),
   available: z.boolean().optional(),
   contextWindow: z.number().int().positive().optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
   reasoning: z.boolean().optional(),
 }).strict();
 export type ModelChoice = z.infer<typeof ModelChoiceSchema>;
