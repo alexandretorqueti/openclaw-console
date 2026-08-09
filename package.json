@@ -1,0 +1,15 @@
+{
+  "name": "@alexandretorqueti/openclaw-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build -w @alexandretorqueti/openclaw-console-contracts && npm run build -w @alexandretorqueti/openclaw-gateway-client && npm run build -w @alexandretorqueti/openclaw-console-client && npm run build -w @alexandretorqueti/openclaw-console-server && npm run build -w @alexandretorqueti/openclaw-console-web",
+    "typecheck": "npm run build -w @alexandretorqueti/openclaw-console-contracts && npm run build -w @alexandretorqueti/openclaw-gateway-client && npm run build -w @alexandretorqueti/openclaw-console-client && npm run typecheck -w @alexandretorqueti/openclaw-console-server && npm run typecheck -w @alexandretorqueti/openclaw-console-web",
+    "test": "npm run test --workspaces --if-present",
+    "dev": "npm run dev -w @alexandretorqueti/openclaw-console-server",
+    "start": "npm run start -w @alexandretorqueti/openclaw-console-server"
+  },
+  "engines": { "node": ">=22" }
+}
