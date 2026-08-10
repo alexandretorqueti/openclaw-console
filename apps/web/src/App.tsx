@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { flushSync } from "react-dom";
 import { FieldMultipleChoice, JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
-  AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronLeftRounded, ChevronRightRounded,
-  CircleRounded, ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, HubRounded, LightModeRounded, PsychologyRounded,
-  RefreshRounded, SearchRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
+  AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
+  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, HubRounded, InfoOutlined, LightModeRounded, MoreVertRounded, PsychologyRounded,
+  RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
 } from "@mui/icons-material";
 import {
-  Alert, Avatar, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton, InputAdornment,
-  LinearProgress, MenuItem, Paper, Select, Stack, Switch, TextField, Tooltip, Typography,
+  Alert, Avatar, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton,
+  LinearProgress, Menu, MenuItem, Paper, Select, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiSession, type GatewayStatus } from "./api";
 
@@ -34,6 +34,14 @@ function contextPercent(session?: ApiSession): number | undefined {
 }
 function formatTokens(value?: number, compact = false) { if (value === undefined) return "—"; return new Intl.NumberFormat("pt-BR", compact ? { notation: "compact", maximumFractionDigits: 1 } : undefined).format(value); }
 function truncateLabel(value: string, maximum = 38) { return value.length <= maximum ? value : `${value.slice(0, maximum - 1).trimEnd()}…`; }
+function suggestSessionName(firstMessage: string): string | undefined {
+  const clean = firstMessage.replace(/^\/\w+\s*/i, "").replace(/\s+/g, " ").trim();
+  if (!clean) return undefined;
+  const stopWords = new Set(["como", "quero", "preciso", "faça", "faz", "me", "para", "por", "de", "da", "do", "um", "uma", "o", "a", "em", "com", "vou", "pode", "poderia", "ajuda", "pode" ]);
+  const words = clean.split(" ").filter((word) => word.length > 2 && !stopWords.has(word.toLowerCase())).slice(0, 5);
+  if (!words.length) return truncateLabel(clean.replace(/\s+/g, " "), 40);
+  return truncateLabel(words.join(" "), 40);
+}
 function formatModelSize(sizeBytes?: number) { return sizeBytes === undefined ? undefined : `${new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(sizeBytes / 1_000_000_000)} GB`; }
 function contextLabel(session?: ApiSession) { const percent = contextPercent(session); if (percent === undefined) return "—"; return `${percent}% · ${session?.contextTokens === undefined ? "total desconhecido" : `${formatTokens(session.contextTokens, true)} tokens`}`; }
 function agentIdFromSessionKey(key: string, fallback?: string) { return key.startsWith("agent:") ? key.split(":")[1] || fallback : fallback; }
@@ -72,50 +80,47 @@ function BrandRail({ view, onNavigate }: { view: ConsoleView; onNavigate: (view:
   </Box>;
 }
 
-function AgentList({ agents, selected, processingAgents, status, loading, onSelect, onRefresh, onHide }: {
-  agents: ApiAgent[]; selected?: ApiAgent; processingAgents: ReadonlySet<string>; status?: GatewayStatus; loading: boolean;
-  onSelect: (agent: ApiAgent) => void; onRefresh: () => void; onHide: () => void;
-}) {
-  const [filter, setFilter] = useState("");
-  const visible = agents.filter((agent) => `${agent.name} ${agent.id}`.toLowerCase().includes(filter.toLowerCase()));
-  return <Box className="agent-panel">
-    <Box className="panel-heading"><Box><Typography variant="overline">Workspace</Typography><Typography variant="h6">Agentes</Typography></Box>
-      <Stack direction="row" spacing={0.3}><IconButton size="small" onClick={onRefresh} disabled={loading}><RefreshRounded /></IconButton><Tooltip title="Ocultar agentes"><IconButton size="small" onClick={onHide}><ChevronLeftRounded /></IconButton></Tooltip></Stack></Box>
-    <TextField fullWidth size="small" placeholder="Buscar agente" value={filter} onChange={(e) => setFilter(e.target.value)} className="soft-input"
-      InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment> }} />
-    {loading && <LinearProgress sx={{ mt: 1 }} />}
-    <Stack spacing={0.7} sx={{ mt: 2 }}>
-      {visible.map((agent) => { const color = agentColor(agent); return <Button key={agent.id} className={selected?.id === agent.id ? "agent-item selected" : "agent-item"} onClick={() => onSelect(agent)}>
-        <Avatar sx={{ width: 39, height: 39, bgcolor: `${color}22`, border: `1px solid ${color}55`, fontSize: 18 }}>{agent.emoji ?? "🤖"}</Avatar>
-        <Box className="agent-copy"><Stack direction="row" alignItems="center" spacing={0.8}><Typography>{agent.name}</Typography>{processingAgents.has(agent.id) && <Tooltip title="Agente processando"><CircularProgress className="agent-processing" size={14} thickness={5} /></Tooltip>}<CircleRounded className={`status-dot ${status?.connected ? "online" : "offline"}`} /></Stack>
-          <Typography variant="caption">{agent.role ?? agent.model ?? agent.id}</Typography></Box><ChevronRightRounded className="agent-chevron" />
-      </Button>; })}
-    </Stack>
-    <Paper className={`gateway-card ${status?.connected ? "connected" : "disconnected"}`} elevation={0}><Stack direction="row" justifyContent="space-between" alignItems="center">
-      <Typography variant="caption">Gateway OpenClaw</Typography><Chip size="small" color={status?.connected ? "success" : "error"} label={status?.connected ? "Conectado" : "Desconectado"} />
-    </Stack><Typography variant="body2" sx={{ mt: 1 }}>{status?.gatewayUrl ?? "backend/BFF"}</Typography>
-      <Typography variant="caption" color="text.secondary">{status?.serverVersion ? `OpenClaw ${status.serverVersion}` : status?.connected ? "Conexão operacional" : status?.error ?? "Aguardando conexão"}</Typography></Paper>
-  </Box>;
-}
-
-function SessionList({ agent, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onHide }: {
-  agent?: ApiAgent; sessions: ApiSession[]; selected?: ApiSession; loading: boolean; loadingMore: boolean; hasMore: boolean;
-  onSelect: (session: ApiSession) => void; onCreate: () => void; onLoadMore: () => void; onRename: () => void; onDelete: () => void; onHide: () => void;
+function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onShowDetails }: {
+  agents: ApiAgent[]; selectedAgentId: string; onAgentSelect: (agentId: string) => void; sessions: ApiSession[]; selected?: ApiSession;
+  loading: boolean; loadingMore: boolean; hasMore: boolean;
+  onSelect: (session: ApiSession) => void; onCreate: () => void; onLoadMore: () => void;
+  onRename: (session: ApiSession) => void; onDelete: (session: ApiSession) => void; onShowDetails: (session: ApiSession) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null); const sentinelRef = useRef<HTMLDivElement>(null);
+  const [menuFor, setMenuFor] = useState<ApiSession | null>(null); const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [miniFor, setMiniFor] = useState<ApiSession | null>(null); const [miniPos, setMiniPos] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
-  return <Box className="session-panel" ref={panelRef}><Box className="session-sticky-header"><Box className="panel-heading compact"><Box>
-    <Typography variant="overline">{agent?.name ?? "Agente"}</Typography><Typography variant="h6">Sessões</Typography></Box>
-    <Stack direction="row" spacing={0.2}><Tooltip title="Renomear sessão"><span><IconButton size="small" disabled={!selected} onClick={onRename}><EditRounded fontSize="small" /></IconButton></span></Tooltip><Tooltip title="Excluir sessão"><span><IconButton size="small" color="error" disabled={!selected || selected.hasActiveRun} onClick={onDelete}><DeleteOutlineRounded fontSize="small" /></IconButton></span></Tooltip><Button size="small" startIcon={<AddRounded />} variant="outlined" disabled={!agent} onClick={onCreate}>Nova</Button><Tooltip title="Ocultar sessões"><IconButton size="small" onClick={onHide}><ChevronLeftRounded /></IconButton></Tooltip></Stack></Box>
-    {loading && <LinearProgress />}</Box>
-    <Stack spacing={1.1}>{sessions.map((session) => { const context = contextPercent(session); return <Paper key={session.key} elevation={0} onClick={() => onSelect(session)} className={selected?.key === session.key ? "session-card selected" : "session-card"}>
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start"><Stack direction="row" spacing={0.8} alignItems="center"><Chip size="small" label={displayModel(session, agent)} className="project-chip" />{session.hasActiveRun && <Tooltip title="Sessão processando"><CircularProgress className="session-processing" size={15} thickness={5} /></Tooltip>}</Stack>{session.unread && <Box className="unread-dot" />}</Stack>
-      <Typography className="session-title">{session.title ?? session.label ?? session.key}</Typography>
-      <Stack direction="row" justifyContent="space-between" spacing={1}><Typography variant="caption" color="text.secondary">{relativeTime(session.updatedAt ?? session.createdAt)}</Typography><Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Typography variant="caption" color="text.secondary">{contextLabel(session)}</Typography></Tooltip></Stack>
-      <LinearProgress variant="determinate" value={context ?? 0} color={(context ?? 0) > 70 ? "warning" : "primary"} sx={{ mt: 1.1 }} />
-    </Paper>; })}</Stack>
-    {!loading && !sessions.length && <Box className="empty-sessions"><PsychologyRounded /><Typography>Nenhuma sessão deste agente.</Typography></Box>}
-    <Box ref={sentinelRef} className="sessions-sentinel">{loadingMore && <><CircularProgress size={18} /><Typography variant="caption">Carregando mais sessões…</Typography></>}</Box>
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
+  return <Box className="chats-panel" ref={panelRef}>
+    <Box className="chats-brand"><Box className="brand-mark">C</Box><Typography variant="h6">Global IA</Typography></Box>
+    <Select size="small" className="chats-agent-select" value={selectedAgentId} onChange={(event) => onAgentSelect(String(event.target.value))} renderValue={(value) => { const agent = agents.find((a) => a.id === value); return agent ? `${agent.emoji ?? "🤖"} ${agent.name}` : value; }}>
+      {agents.map((agent) => <MenuItem key={agent.id} value={agent.id}>{agent.emoji ?? "🤖"} {agent.name}</MenuItem>)}
+    </Select>
+    <Button className="new-chat-button" startIcon={<AddRounded />} disabled={!selectedAgent} onClick={onCreate}>Novo chat</Button>
+    <Typography variant="overline" className="chats-section-title">Chats</Typography>
+    {loading && <LinearProgress className="chats-loading-progress" />}
+    <Box className="chat-list">{sessions.map((session) => {
+      const name = session.label ?? session.title ?? session.key;
+      return <Box key={session.key} className={selected?.key === session.key ? "chat-item selected" : "chat-item"} onClick={() => onSelect(session)}>
+        <Typography className="chat-name" title={name}>{name}</Typography>
+        <IconButton className="chat-more" size="small" onClick={(event) => { event.stopPropagation(); setMenuFor(session); setMenuAnchor(event.currentTarget); }} aria-label="Opções da conversa"><MoreVertRounded /></IconButton>
+      </Box>; })}
+      {!loading && !sessions.length && <Box className="chat-empty">Nenhum chat deste agente.</Box>}
+    </Box>
+    <Box ref={sentinelRef} className="chats-more-sentinel">{loadingMore && <><CircularProgress size={18} /><Typography variant="caption">Carregando mais…</Typography></>}</Box>
+    <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => { setMenuAnchor(null); setMenuFor(null); }}>
+      <MenuItem onClick={() => { if (menuFor) onRename(menuFor); setMenuAnchor(null); setMenuFor(null); }}><EditRounded fontSize="small" sx={{ mr: 1 }} />Editar</MenuItem>
+      <MenuItem onClick={() => { if (menuFor) onDelete(menuFor); setMenuAnchor(null); setMenuFor(null); }}><DeleteOutlineRounded fontSize="small" sx={{ mr: 1 }} color="error" />Excluir</MenuItem>
+      <MenuItem onClick={() => { if (menuFor) { setMiniFor(menuFor); setMiniPos(menuAnchor ? { x: menuAnchor.getBoundingClientRect().right, y: menuAnchor.getBoundingClientRect().top } : null); } setMenuAnchor(null); setMenuFor(null); }}><InfoOutlined fontSize="small" sx={{ mr: 1 }} />Detalhes</MenuItem>
+    </Menu>
+    {miniFor && miniPos && <ClickAwayListener onClickAway={() => { setMiniFor(null); setMiniPos(null); }}><Box className="session-mini-modal" sx={{ left: miniPos.x + 10, top: Math.max(8, miniPos.y - 10) }}>
+      <Typography variant="overline" className="section-muted">Detalhes</Typography>
+      <Box className="mini-detail-row"><Typography variant="caption" className="detail-label">Modelo</Typography><Typography variant="body2">{displayModel(miniFor, selectedAgent)}</Typography></Box>
+      <Box className="mini-detail-row"><Typography variant="caption" className="detail-label">Tempo de uso</Typography><Typography variant="body2">{relativeTime(miniFor.updatedAt ?? miniFor.createdAt)}</Typography></Box>
+      <Box className="mini-detail-row"><Typography variant="caption" className="detail-label">Tokens</Typography><Typography variant="body2">{contextPercent(miniFor) === undefined ? "—" : `${contextPercent(miniFor)}%`}</Typography></Box>
+      <Box className="mini-context-bar"><LinearProgress variant="determinate" value={contextPercent(miniFor) ?? 0} color={(contextPercent(miniFor) ?? 0) > 70 ? "warning" : "primary"} /><Typography variant="caption">{contextPercent(miniFor) === undefined ? "—" : `${contextPercent(miniFor)}%`}</Typography></Box>
+      <Button size="small" sx={{ mt: 1.2 }} onClick={() => { onShowDetails(miniFor); setMiniFor(null); setMiniPos(null); }}>Ver detalhes completos</Button>
+    </Box></ClickAwayListener>}
   </Box>;
 }
 
@@ -202,9 +207,9 @@ function toolActivityPreview(message: ApiMessage) {
 }
 
 type SendShortcut = "enter" | "ctrl-enter";
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, onShortcutChange, onSend, onAbort, onFork }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
-  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void;
+  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [modelEditorOpen, setModelEditorOpen] = useState(false);
@@ -216,24 +221,30 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const submitDraft = async () => { if (!draft.trim() || processing || loading) return; const text = draft.trim(); setDraft(""); await onSend(text); };
   const send = async (event: FormEvent) => { event.preventDefault(); await submitDraft(); };
   if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
-  return <Box className="chat-pane"><Box className="chat-header"><Box><Stack direction="row" spacing={1} alignItems="center"><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
-    <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box><Stack direction="row" spacing={0.7}>
-      {processing && <Tooltip title="Interromper"><IconButton color="error" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
-      <Tooltip title="Criar fork"><IconButton onClick={onFork}><CallSplitRounded /></IconButton></Tooltip></Stack></Box>
+  return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
+    <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box>
+    <Stack direction="row" spacing={0.6} alignItems="center" className="chat-header-controls">
+      <ClickAwayListener onClickAway={() => setModelEditorOpen(false)}>{modelEditorOpen ? <Box boxSizing="border-box" width={320} maxWidth="52vw"><FieldMultipleChoice name="model" label="Modelo" value={displayModel(session, agent)} disabled={processing || loading}
+        config={{ data: models.map((model) => ({ id: `${model.provider}/${model.id}`, label: `${model.name} · ${model.provider}/${model.id}` })), idField: "id", displayField: "label", noOptionsText: "Nenhum modelo disponível" }}
+        onChange={(_name, value) => { setModelEditorOpen(false); const ref = String(value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} /></Box> : <Tooltip title="Trocar modelo"><Chip size="small" label={displayModel(session, agent)} onClick={() => setModelEditorOpen(true)} sx={{ cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }} /></Tooltip>}</ClickAwayListener>
+      <Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>
+      <Tooltip title="Detalhes da sessão"><IconButton size="small" onClick={onShowDetails}><DataObjectRounded fontSize="small" /></IconButton></Tooltip>
+      {processing && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
+      <Tooltip title="Criar fork"><IconButton size="small" onClick={onFork}><CallSplitRounded fontSize="small" /></IconButton></Tooltip>
+    </Stack></Box>
     <Box className="message-list" ref={listRef} onScroll={(event) => { const list = event.currentTarget; scrollPositions.current.set(session.key, list.scrollTop); nearBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop < 80; }}>{loading ? <Box className="loading-chat"><CircularProgress size={28} /></Box> : groupDisplayMessages(messages).map((item) => item.kind === "activity" ? <TechnicalActivity key={item.id} messages={item.messages} /> : item.kind === "thinking" ? <ThinkingActivity key={item.id} content={item.content} /> : <MessageBubble key={item.message.id} message={item.message} agent={agent} />)}
       {streamText && <MessageBubble message={{ id: "live-stream", role: "assistant", author: agent.name, content: streamText }} agent={agent} />}</Box>
     <Box component="form" onSubmit={send} className="composer-wrap"><Paper className="composer" elevation={0}><TextField multiline maxRows={5} fullWidth disabled={loading || processing} placeholder={loading ? "Carregando histórico…" : processing ? "Aguarde o término do processamento…" : `Conversar com ${agent.name} nesta sessão…`} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(event) => { if (processing || loading || event.key !== "Enter" || event.nativeEvent.isComposing) return; const ctrl = event.ctrlKey || event.metaKey; if (sendShortcut === "enter" && ctrl) { event.preventDefault(); const textarea = event.target as HTMLTextAreaElement; const start = textarea.selectionStart; const end = textarea.selectionEnd; setDraft((current) => `${current.slice(0, start)}\n${current.slice(end)}`); requestAnimationFrame(() => textarea.setSelectionRange(start + 1, start + 1)); return; } const shouldSend = sendShortcut === "enter" ? !event.shiftKey : ctrl; if (shouldSend) { event.preventDefault(); void submitDraft(); } }} variant="standard" InputProps={{ disableUnderline: true }} />
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 1 }}><Stack direction="row" spacing={0.7} alignItems="center"><ClickAwayListener onClickAway={() => setModelEditorOpen(false)}>{modelEditorOpen ? <Box sx={{ width: 340, maxWidth: "45vw" }}><FieldMultipleChoice name="model" label="Modelo" value={displayModel(session, agent)} disabled={processing || loading}
-        config={{ data: models.map((model) => ({ id: `${model.provider}/${model.id}`, label: `${model.name} · ${model.provider}/${model.id}` })), idField: "id", displayField: "label", noOptionsText: "Nenhum modelo disponível" }}
-        onChange={(_name, value) => { setModelEditorOpen(false); const ref = String(value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} /></Box> : <Chip size="small" label={displayModel(session, agent)} onClick={() => setModelEditorOpen(true)} sx={{ cursor: "pointer", "&:hover": { bgcolor: "action.hover" } }} />}</ClickAwayListener><Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>{processing && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}</Stack>
-      <Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || processing || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
+      <Stack direction="row" justifyContent="flex-end" alignItems="center" sx={{ mt: 1 }}>{processing && <Box className="composer-processing" role="status" aria-live="polite" sx={{ mr: "auto" }}><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}<Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || processing || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
 }
 
-function DetailPanel({ agent, session, onHide }: { agent?: ApiAgent; session?: ApiSession; onHide: () => void }) {
-  if (!agent) return <Box className="detail-panel" />;
+function SessionDetailsModal({ agent, session, open, onClose }: { agent?: ApiAgent; session?: ApiSession; open: boolean; onClose: () => void }) {
+  if (!agent) return null;
   const context = contextPercent(session);
-  return <Box className="detail-panel"><Box className="panel-heading compact"><Box><Typography variant="overline">Contexto</Typography><Typography variant="h6">Detalhes da sessão</Typography></Box><Tooltip title="Ocultar detalhes"><IconButton size="small" onClick={onHide}><ChevronRightRounded /></IconButton></Tooltip></Box>
+  return <Dialog open={open} onClose={onClose} maxWidth={false}><Box className="details-modal-paper">
+    <Box className="details-modal-header"><Box><Typography variant="overline">Contexto</Typography><Typography variant="h6">Detalhes da sessão</Typography></Box>
+      <Tooltip title="Fechar"><IconButton size="small" onClick={onClose}><ChevronRightRounded /></IconButton></Tooltip></Box>
     <Paper className="agent-profile-card" elevation={0}><Avatar sx={{ width: 52, height: 52, bgcolor: `${agentColor(agent)}22`, fontSize: 24 }}>{agent.emoji ?? "🤖"}</Avatar><Box><Typography fontWeight={700}>{agent.name}</Typography><Typography variant="caption" color="text.secondary">{agent.role ?? agent.id}</Typography></Box></Paper>
     <Divider sx={{ my: 2.5 }} /><Stack spacing={2.2}><Box><Typography className="detail-label">Modelo</Typography><Typography variant="body2">{displayModel(session, agent)}</Typography></Box>
       <Box><Typography className="detail-label">Session key</Typography><Typography variant="body2" className="monospace">{session?.key ?? "—"}</Typography></Box>
@@ -242,27 +253,12 @@ function DetailPanel({ agent, session, onHide }: { agent?: ApiAgent; session?: A
     <Divider sx={{ my: 2.5 }} /><Typography className="detail-label">Linhagem</Typography><LayoutContainer mode="grid" columns={1} gap={1} sx={{ mt: 1 }}>
       {session?.parentSessionKey && <LayoutItem><Paper className="lineage-card" elevation={0}><Box className="lineage-icon amber"><PsychologyRounded /></Box><Box><Typography variant="caption">Origem</Typography><Typography variant="body2" className="monospace">{session.parentSessionKey}</Typography></Box></Paper></LayoutItem>}
       <LayoutItem><Paper className="lineage-card current" elevation={0}><Box className="lineage-icon green"><TerminalRounded /></Box><Box><Typography variant="caption">Sessão atual</Typography><Typography variant="body2">{session?.label ?? "Conversa"}</Typography></Box></Paper></LayoutItem></LayoutContainer>
-  </Box>;
+    <DialogActions><Button onClick={onClose}>Fechar</Button></DialogActions>
+  </Box></Dialog>;
 }
 
-type ConsoleLayout = { agentsWidth: number; sessionsWidth: number; detailsWidth: number; agentsVisible: boolean; sessionsVisible: boolean; detailsVisible: boolean };
-const defaultLayout: ConsoleLayout = { agentsWidth: 250, sessionsWidth: 300, detailsWidth: 264, agentsVisible: true, sessionsVisible: true, detailsVisible: true };
-const layoutStorageKey = "openclaw-console-layout-v1";
 const shortcutStorageKey = "openclaw-console-send-shortcut";
 function loadSendShortcut(): SendShortcut { return localStorage.getItem(shortcutStorageKey) === "enter" ? "enter" : "ctrl-enter"; }
-function loadLayout(): ConsoleLayout {
-  try { const stored = JSON.parse(localStorage.getItem(layoutStorageKey) ?? "null") as Partial<ConsoleLayout> | null; return stored ? { ...defaultLayout, ...stored } : defaultLayout; }
-  catch { return defaultLayout; }
-}
-function clamp(value: number, minimum: number, maximum: number) { return Math.min(maximum, Math.max(minimum, value)); }
-function ResizeHandle({ direction = 1, onResize }: { direction?: 1 | -1; onResize: (delta: number) => void }) {
-  return <Box className="resize-handle" role="separator" aria-orientation="vertical" onPointerDown={(event) => { event.preventDefault(); let previous = event.clientX; const move = (next: PointerEvent) => { const delta = (next.clientX - previous) * direction; previous = next.clientX; onResize(delta); }; const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); document.body.classList.remove("resizing-panels"); }; document.body.classList.add("resizing-panels"); window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true }); }} />;
-}
-function RestorePanels({ layout, connected, onRestore }: { layout: ConsoleLayout; connected: boolean; onRestore: (panel: "agents" | "sessions" | "details") => void }) {
-  const hidden = [!layout.agentsVisible && { panel: "agents" as const, label: "Exibir agentes", icon: <SmartToyOutlined /> }, connected && !layout.sessionsVisible && { panel: "sessions" as const, label: "Exibir sessões", icon: <ChatBubbleOutlineRounded /> }, connected && !layout.detailsVisible && { panel: "details" as const, label: "Exibir detalhes", icon: <DataObjectRounded /> }].filter(Boolean) as Array<{ panel: "agents" | "sessions" | "details"; label: string; icon: ReactNode }>;
-  if (!hidden.length) return null;
-  return <Box className="restore-panels">{hidden.map((item) => <Tooltip title={item.label} placement="right" key={item.panel}><IconButton onClick={() => onRestore(item.panel)}>{item.icon}</IconButton></Tooltip>)}</Box>;
-}
 function GatewayOfflinePane({ status }: { status?: GatewayStatus }) {
   return <Box className="gateway-offline"><Box className="gateway-offline-icon"><HubRounded /></Box><Typography variant="h6">Gateway desconectado</Typography><Typography color="text.secondary">Sessões e conversas ficam indisponíveis até a conexão ser restabelecida.</Typography>{status?.error && <Typography variant="caption" color="error">{status.error}</Typography>}</Box>;
 }
@@ -296,26 +292,17 @@ function ConsoleApp() {
   const { themeName, setThemeName } = useBibliotecaTheme();
   const [view, setView] = useState<ConsoleView>("conversations");
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  const [layout, setLayout] = useState<ConsoleLayout>(loadLayout); const [sendShortcut, setSendShortcut] = useState<SendShortcut>(loadSendShortcut); const gatewayConnectedRef = useRef(false); const statusProbeRef = useRef<Promise<boolean> | undefined>(undefined);
+  const [sendShortcut, setSendShortcut] = useState<SendShortcut>(loadSendShortcut); const gatewayConnectedRef = useRef(false); const statusProbeRef = useRef<Promise<boolean> | undefined>(undefined);
   const [agents, setAgents] = useState<ApiAgent[]>([]); const [models, setModels] = useState<ApiModel[]>([]); const [sessions, setSessions] = useState<ApiSession[]>([]); const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [status, setStatus] = useState<GatewayStatus>(); const [agentId, setAgentId] = useState(""); const [sessionKey, setSessionKey] = useState(""); const currentSessionKeyRef = useRef(""); const [sessionId, setSessionId] = useState<string>();
   const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false); const processingBySessionRef = useRef(new Map<string, boolean>()); const [processingAgentIds, setProcessingAgentIds] = useState<Set<string>>(() => new Set());
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
   const optimisticMessagesRef = useRef(new Map<string, ApiMessage[]>());
   const scrollPositionsRef = useRef(new Map<string, number>());
   const [runId, setRunId] = useState<string>(); const [streamText, setStreamText] = useState("");
   const selectedAgent = agents.find((agent) => agent.id === agentId); const selectedSession = sessions.find((session) => session.key === sessionKey); const selectedSessionAgentId = selectedSession ? sessionAgentId(selectedSession) : agentId; const connected = Boolean(status?.connected);
-  const displayLayout = useMemo(() => {
-    let agentsVisible = layout.agentsVisible; let sessionsVisible = connected && layout.sessionsVisible; let detailsVisible = connected && layout.detailsVisible;
-    const rail = viewportWidth <= 720 ? 58 : 68; const restore = 42; const handles = () => Number(agentsVisible) * 5 + Number(sessionsVisible) * 5 + Number(detailsVisible) * 5;
-    const required = () => rail + restore + handles() + (agentsVisible ? layout.agentsWidth : 0) + (sessionsVisible ? layout.sessionsWidth : 0) + (detailsVisible ? layout.detailsWidth : 0) + 360;
-    if (required() > viewportWidth) detailsVisible = false;
-    if (required() > viewportWidth) agentsVisible = false;
-    if (required() > viewportWidth) sessionsVisible = false;
-    return { ...layout, agentsVisible, sessionsVisible, detailsVisible };
-  }, [connected, layout, viewportWidth]);
-  const hasRestoreBar = !displayLayout.agentsVisible || connected && (!displayLayout.sessionsVisible || !displayLayout.detailsVisible);
-  const gridColumns = useMemo(() => { if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`; const columns = [`${viewportWidth <= 720 ? 58 : 68}px`]; if (hasRestoreBar) columns.push("42px"); if (displayLayout.agentsVisible) columns.push(`${displayLayout.agentsWidth}px`, "5px"); if (!connected) { columns.push("minmax(0, 1fr)"); return columns.join(" "); } if (displayLayout.sessionsVisible) columns.push(`${displayLayout.sessionsWidth}px`, "5px"); columns.push("minmax(0, 1fr)"); if (displayLayout.detailsVisible) columns.push("5px", `${displayLayout.detailsWidth}px`); return columns.join(" "); }, [connected, displayLayout, hasRestoreBar, view, viewportWidth]);
+  const gridColumns = useMemo(() => { if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`; return `${viewportWidth <= 720 ? 58 : 68}px minmax(240px, 300px) minmax(0, 1fr)`; }, [view, viewportWidth]);
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) processingBySessionRef.current.set(session.key, session.hasActiveRun); }); refreshProcessingAgents(); }, [refreshProcessingAgents]);
@@ -326,7 +313,6 @@ function ConsoleApp() {
   const loadHistory = useCallback(async (key: string, id: string) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages([...history.messages, ...unresolved]); setSessionId(history.sessionId); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setHistoryLoading(false); } }, []);
   useEffect(() => { void loadRoot(); }, [loadRoot]);
   useEffect(() => { const resize = () => setViewportWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
-  useEffect(() => { localStorage.setItem(layoutStorageKey, JSON.stringify(layout)); }, [layout]);
   useEffect(() => { localStorage.setItem(shortcutStorageKey, sendShortcut); }, [sendShortcut]);
   useEffect(() => { currentSessionKeyRef.current = sessionKey; }, [sessionKey]);
   useEffect(() => { setSessions([]); setSessionKey(""); setSessionsHasMore(false); setSessionsNextOffset(0); setMessages([]); if (agentId) void loadSessions(agentId); }, [agentId, loadSessions]);
@@ -338,25 +324,23 @@ function ConsoleApp() {
   } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing]);
   useEffect(() => { if (!processing || !sessionKey || !selectedSessionAgentId) return; let cancelled = false; let inactiveChecks = 0; let timer: ReturnType<typeof setTimeout> | undefined; const reconcile = async () => { try { const page = await api.sessions(selectedSessionAgentId, 0, 200); const current = page.sessions.find((session) => session.key === sessionKey); if (current?.hasActiveRun) inactiveChecks = 0; else if (current && ++inactiveChecks >= 2) { cancelled = true; setSessionProcessing(sessionKey, false); if (currentSessionKeyRef.current === sessionKey) { setProcessing(false); setRunId(undefined); setStreamText(""); await Promise.all([loadHistory(sessionKey, selectedSessionAgentId), refreshSessionMetadata(sessionKey, selectedSessionAgentId)]); } } } catch { /* SSE remains authoritative while reconciliation is unavailable. */ } finally { if (!cancelled) timer = setTimeout(() => void reconcile(), 5_000); } }; timer = setTimeout(() => void reconcile(), 4_000); return () => { cancelled = true; if (timer) clearTimeout(timer); }; }, [processing, sessionKey, selectedSessionAgentId, loadHistory, refreshSessionMetadata, setSessionProcessing]);
   const loadMoreSessions = useCallback(() => { if (agentId && sessionsHasMore && !sessionsLoading && !sessionsLoadingMore) void loadSessions(agentId, sessionsNextOffset, true); }, [agentId, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset, loadSessions]);
-  const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
+  const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const wasAutoNamed = /^Chat \d+$/i.test(selectedSession.label ?? selectedSession.title ?? ""); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } else if (wasAutoNamed && !/^\/(?:model|new|fork|abort)/i.test(message.trim())) { const suggested = suggestSessionName(message); if (suggested && suggested !== (selectedSession.label ?? selectedSession.title)) { try { await api.patchSession({ key: targetSessionKey, agentId: targetAgentId, label: suggested }); setSessions((current) => current.map((item) => item.key === targetSessionKey ? { ...item, label: suggested, title: suggested } : item)); } catch { /* renomeio não crítico */ } } } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
   const abort = async () => { if (!selectedSession) return; await api.abort({ sessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), runId }); };
-  const create = async () => { if (!selectedAgent) return; const label = window.prompt("Nome da nova sessão:", "Nova conversa")?.trim(); if (!label) return; try { const result = await api.createSession({ agentId: selectedAgent.id, label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
-  const rename = async () => { if (!selectedSession) return; const label = window.prompt("Novo nome da sessão:", selectedSession.label ?? selectedSession.title)?.trim(); if (!label || label === selectedSession.label) return; try { await api.patchSession({ key: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); setSessions((current) => current.map((session) => session.key === selectedSession.key ? { ...session, label, title: label } : session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
-  const deleteSession = async () => { if (!selectedAgent || !selectedSession || selectedSession.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${selectedSession.label ?? selectedSession.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = selectedSession.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(selectedSession) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); setSessionKey(""); await loadSessions(selectedAgent.id); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  const nextChatNumber = (targetAgentId: string) => { const existing = sessions.filter((session) => sessionAgentId(session) === targetAgentId && /^Chat \d+$/i.test(session.label ?? session.title ?? "")); const used = new Set(existing.map((session) => Number((session.label ?? session.title ?? "").match(/\d+/)?.[0] ?? 0))); let n = 1; while (used.has(n)) n += 1; return n; };
+  const create = async (targetAgentId?: string) => { const target = agents.find((agent) => agent.id === (targetAgentId ?? agentId)); if (!target) return; const label = `Chat ${String(nextChatNumber(target.id)).padStart(2, "0")}`; try { const result = await api.createSession({ agentId: target.id, label }); await loadSessions(target.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  const renameSession = async (session: ApiSession) => { const label = window.prompt("Novo nome da sessão:", session.label ?? session.title)?.trim(); if (!label || label === (session.label ?? session.title)) return; try { await api.patchSession({ key: session.key, agentId: sessionAgentId(session), label }); setSessions((current) => current.map((item) => item.key === session.key ? { ...item, label, title: label } : item)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const fork = async () => { if (!selectedAgent || !selectedSession) return; const label = window.prompt("Nome do fork:", `Fork · ${selectedSession.label ?? selectedSession.title ?? "sessão"}`)?.trim(); if (!label) return; try { const result = await api.forkSession({ parentSessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
 
   return <Box className={`console-shell theme-${themeName} view-${view}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
     {view === "agents" ? <AgentManagement agents={agents} models={models} status={status} loading={loading} onRefresh={loadRoot} onError={setError} /> : <>
-    {hasRestoreBar && <RestorePanels layout={displayLayout} connected={connected} onRestore={(panel) => setLayout((current) => panel === "agents" ? { ...current, agentsVisible: true } : panel === "sessions" ? { ...current, sessionsVisible: true } : { ...current, detailsVisible: true })} />}
-    {displayLayout.agentsVisible && <AgentList agents={agents} selected={selectedAgent} processingAgents={processingAgentIds} status={status} loading={loading} onSelect={(a) => setAgentId(a.id)} onRefresh={loadRoot} onHide={() => setLayout((current) => ({ ...current, agentsVisible: false }))} />}
-    {displayLayout.agentsVisible && <ResizeHandle onResize={(delta) => setLayout((current) => ({ ...current, agentsWidth: clamp(current.agentsWidth + delta, 190, 440) }))} />}
-    {!connected ? <GatewayOfflinePane status={status} /> : <>
-      {displayLayout.sessionsVisible && <SessionList agent={selectedAgent} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore} onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create()} onLoadMore={loadMoreSessions} onRename={() => void rename()} onDelete={() => void deleteSession()} onHide={() => setLayout((current) => ({ ...current, sessionsVisible: false }))} />}
-      {displayLayout.sessionsVisible && <ResizeHandle onResize={(delta) => setLayout((current) => ({ ...current, sessionsWidth: clamp(current.sessionsWidth + delta, 230, 520) }))} />}
-      <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} />
-      {displayLayout.detailsVisible && <ResizeHandle direction={-1} onResize={(delta) => setLayout((current) => ({ ...current, detailsWidth: clamp(current.detailsWidth + delta, 220, 460) }))} />}
-      {displayLayout.detailsVisible && <DetailPanel agent={selectedAgent} session={selectedSession} onHide={() => setLayout((current) => ({ ...current, detailsVisible: false }))} />}
-    </>}
+      {!connected ? <GatewayOfflinePane status={status} /> : <>
+        <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+          onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
+          onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />
+        <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} />
+        <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />
+      </>}
     </>}
     {error && <Alert severity="error" className="floating-error" onClose={() => setError("")}>{error}</Alert>}
     <Tooltip title={themeName === "escuro" ? "Tema claro" : "Tema escuro"}><IconButton className="theme-toggle" onClick={() => setThemeName(themeName === "escuro" ? "claro" : "escuro")}>{themeName === "escuro" ? <LightModeRounded /> : <DarkModeRounded />}</IconButton></Tooltip>
