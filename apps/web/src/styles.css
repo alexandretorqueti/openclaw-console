@@ -28,6 +28,15 @@ button, input, textarea { font: inherit; }
 
 .chats-panel { min-width: 0; min-height: 0; overflow: auto; padding: 19px 16px; background: rgba(12, 17, 32, .78); }
 .chats-panel { display: flex; flex-direction: column; gap: 14px; }
+
+/* Botão de ocultar/mostrar a coluna de conversas */
+.toggle-chats { color: #99a2c0 !important; background: rgba(116, 126, 160, .08) !important; }
+.toggle-chats:hover { background: rgba(116, 126, 160, .18) !important; color: #fff !important; }
+
+/* Overlay de conversas em telas estreitas: backdrop + painel, fecha apenas por botão explícito */
+.chats-overlay { position: fixed; inset: 0; z-index: 40; display: flex; align-items: stretch; background: rgba(5, 8, 18, .55); backdrop-filter: blur(2px); }
+.chats-overlay .chats-panel { flex: 0 0 min(82vw, 300px); height: 100%; border-right: 1px solid rgba(130, 141, 177, .2); box-shadow: 10px 0 40px rgba(0, 0, 0, .4); }
+.chats-overlay .chats-panel .chats-close { display: inline-flex; }
 .chats-brand { display: flex; align-items: center; gap: 9px; }
 .chats-brand .brand-mark { width: 30px; height: 30px; font-size: 14px; border-radius: 9px; }
 .chats-brand .MuiTypography-h6 { font-size: 1rem; font-weight: 800; }
@@ -121,6 +130,9 @@ button, input, textarea { font: inherit; }
 .send-shortcut { height: 32px; min-width: 126px; border-radius: 10px !important; color: #8b93ad !important; font-size: .65rem !important; background: rgba(120, 130, 163, .07); }
 .send-shortcut .MuiSelect-select { padding: 5px 28px 5px 9px !important; }
 .send-shortcut .MuiOutlinedInput-notchedOutline { border-color: rgba(130, 141, 177, .15) !important; }
+.model-select { height: 32px; max-width: 230px; border-radius: 10px !important; color: #c9a3f2 !important; font-size: .65rem !important; background: rgba(140, 108, 227, .12); }
+.model-select .MuiSelect-select { padding: 5px 28px 5px 9px !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-select .MuiOutlinedInput-notchedOutline { border-color: rgba(170, 130, 235, .28) !important; }
 .send-button { width: 36px; height: 36px; color: white !important; background: linear-gradient(145deg, #8272f6, #5c4bd8) !important; }
 .send-button.Mui-disabled { opacity: .35; }
 
@@ -184,6 +196,7 @@ button, input, textarea { font: inherit; }
   .composer > .MuiStack-root { align-items: flex-start; flex-wrap: wrap; gap: 7px; }
   .composer > .MuiStack-root > .MuiStack-root:first-child { max-width: 100%; flex-wrap: wrap; }
   .send-shortcut { min-width: 118px; }
+  .model-select { max-width: 150px; }
   .management-header { align-items: stretch; flex-direction: column; }
   .management-header > .MuiStack-root { justify-content: flex-end; }
   .agent-management { padding: 16px 12px; }
@@ -209,7 +222,10 @@ button, input, textarea { font: inherit; }
 .theme-claro .chat-name { color: #293148; }
 .theme-claro .chat-item.selected .chat-name { color: #3a2fb0; }
 .theme-claro .new-chat-button { color: #4a3fce !important; border-color: rgba(74, 63, 206, .28) !important; }
-@media (max-width: 980px) { .console-shell { grid-template-columns: 76px minmax(200px, 240px) minmax(0, 1fr); } }
-@media (max-width: 720px) { .console-shell { grid-template-columns: 60px minmax(180px, 210px) minmax(0, 1fr); } }
+@media (max-width: 900px) {
+  .console-shell { grid-template-columns: 60px minmax(0, 1fr); }
+  .toggle-chats { display: inline-flex !important; }
+  .theme-toggle { display: none; }
+}
 
 body:has(.MuiCssBaseline-root), body { background: #0b1020; }
