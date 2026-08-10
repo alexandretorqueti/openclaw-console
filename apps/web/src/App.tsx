@@ -80,11 +80,12 @@ function BrandRail({ view, onNavigate }: { view: ConsoleView; onNavigate: (view:
   </Box>;
 }
 
-function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onShowDetails }: {
+function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onShowDetails, onClose }: {
   agents: ApiAgent[]; selectedAgentId: string; onAgentSelect: (agentId: string) => void; sessions: ApiSession[]; selected?: ApiSession;
   loading: boolean; loadingMore: boolean; hasMore: boolean;
   onSelect: (session: ApiSession) => void; onCreate: () => void; onLoadMore: () => void;
   onRename: (session: ApiSession) => void; onDelete: (session: ApiSession) => void; onShowDetails: (session: ApiSession) => void;
+  onClose?: () => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null); const sentinelRef = useRef<HTMLDivElement>(null);
   const [menuFor, setMenuFor] = useState<ApiSession | null>(null); const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
@@ -92,7 +93,7 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
   return <Box className="chats-panel" ref={panelRef}>
-    <Box className="chats-brand"><Box className="brand-mark">C</Box><Typography variant="h6">Global IA</Typography></Box>
+    <Box className="chats-brand"><Box className="brand-mark">C</Box><Typography variant="h6" sx={{ flex: 1 }}>Global IA</Typography>{onClose && <IconButton size="small" className="chats-close" onClick={onClose} aria-label="Fechar conversas"><ChevronRightRounded fontSize="small" /></IconButton>}</Box>
     <Select size="small" className="chats-agent-select" value={selectedAgentId} onChange={(event) => onAgentSelect(String(event.target.value))} renderValue={(value) => { const agent = agents.find((a) => a.id === value); return agent ? `${agent.emoji ?? "🤖"} ${agent.name}` : value; }}>
       {agents.map((agent) => <MenuItem key={agent.id} value={agent.id}>{agent.emoji ?? "🤖"} {agent.name}</MenuItem>)}
     </Select>
@@ -207,9 +208,9 @@ function toolActivityPreview(message: ApiMessage) {
 }
 
 type SendShortcut = "enter" | "ctrl-enter";
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
-  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
+  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [modelEditorOpen, setModelEditorOpen] = useState(false);
@@ -221,7 +222,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const submitDraft = async () => { if (!draft.trim() || processing || loading) return; const text = draft.trim(); setDraft(""); await onSend(text); };
   const send = async (event: FormEvent) => { event.preventDefault(); await submitDraft(); };
   if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
-  return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
+  return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Tooltip title={mobile ? "Abrir conversas" : "Ocultar/mostrar conversas"}><IconButton size="small" className="toggle-chats" onClick={onToggleChats}><ChatBubbleOutlineRounded fontSize="small" /></IconButton></Tooltip><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
     <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box>
     <Stack direction="row" spacing={0.6} alignItems="center" className="chat-header-controls">
       <Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>
@@ -257,7 +258,18 @@ function SessionDetailsModal({ agent, session, open, onClose }: { agent?: ApiAge
 }
 
 const shortcutStorageKey = "openclaw-console-send-shortcut";
+const chatsVisibleStorageKey = "openclaw-console-chats-visible";
+const uiStateStorageKey = "openclaw-console-ui-state";
 function loadSendShortcut(): SendShortcut { return localStorage.getItem(shortcutStorageKey) === "enter" ? "enter" : "ctrl-enter"; }
+function loadChatsVisible(): boolean { return localStorage.getItem(chatsVisibleStorageKey) !== "false"; }
+function loadSavedUiState(): { agentId: string; sessionKey: string } {
+  try {
+    const raw = localStorage.getItem(uiStateStorageKey);
+    if (!raw) return { agentId: "", sessionKey: "" };
+    const parsed = JSON.parse(raw) as Partial<{ agentId: string; sessionKey: string }>;
+    return { agentId: typeof parsed.agentId === "string" ? parsed.agentId : "", sessionKey: typeof parsed.sessionKey === "string" ? parsed.sessionKey : "" };
+  } catch { return { agentId: "", sessionKey: "" }; }
+}
 function GatewayOfflinePane({ status }: { status?: GatewayStatus }) {
   return <Box className="gateway-offline"><Box className="gateway-offline-icon"><HubRounded /></Box><Typography variant="h6">Gateway desconectado</Typography><Typography color="text.secondary">Sessões e conversas ficam indisponíveis até a conexão ser restabelecida.</Typography>{status?.error && <Typography variant="caption" color="error">{status.error}</Typography>}</Box>;
 }
@@ -293,15 +305,21 @@ function ConsoleApp() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [sendShortcut, setSendShortcut] = useState<SendShortcut>(loadSendShortcut); const gatewayConnectedRef = useRef(false); const statusProbeRef = useRef<Promise<boolean> | undefined>(undefined);
   const [agents, setAgents] = useState<ApiAgent[]>([]); const [models, setModels] = useState<ApiModel[]>([]); const [sessions, setSessions] = useState<ApiSession[]>([]); const [messages, setMessages] = useState<ApiMessage[]>([]);
-  const [status, setStatus] = useState<GatewayStatus>(); const [agentId, setAgentId] = useState(""); const [sessionKey, setSessionKey] = useState(""); const currentSessionKeyRef = useRef(""); const [sessionId, setSessionId] = useState<string>();
+  const [status, setStatus] = useState<GatewayStatus>(); const [agentId, setAgentId] = useState(() => loadSavedUiState().agentId); const [sessionKey, setSessionKey] = useState(() => loadSavedUiState().sessionKey); const currentSessionKeyRef = useRef(""); const initialRestoreRef = useRef(true); const [sessionId, setSessionId] = useState<string>();
   const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false); const processingBySessionRef = useRef(new Map<string, boolean>()); const [processingAgentIds, setProcessingAgentIds] = useState<Set<string>>(() => new Set());
   const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
+  const [chatsVisible, setChatsVisible] = useState<boolean>(loadChatsVisible);
   const optimisticMessagesRef = useRef(new Map<string, ApiMessage[]>());
   const scrollPositionsRef = useRef(new Map<string, number>());
   const [runId, setRunId] = useState<string>(); const [streamText, setStreamText] = useState("");
   const selectedAgent = agents.find((agent) => agent.id === agentId); const selectedSession = sessions.find((session) => session.key === sessionKey); const selectedSessionAgentId = selectedSession ? sessionAgentId(selectedSession) : agentId; const connected = Boolean(status?.connected);
-  const gridColumns = useMemo(() => { if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`; return `${viewportWidth <= 720 ? 58 : 68}px minmax(240px, 300px) minmax(0, 1fr)`; }, [view, viewportWidth]);
+  const isNarrow = viewportWidth <= 900;
+  const gridColumns = useMemo(() => {
+    if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
+    if (isNarrow) return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
+    return `${viewportWidth <= 720 ? 58 : 68}px ${chatsVisible ? "minmax(240px, 300px)" : "0px"} minmax(0, 1fr)`;
+  }, [view, viewportWidth, chatsVisible, isNarrow]);
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) processingBySessionRef.current.set(session.key, session.hasActiveRun); }); refreshProcessingAgents(); }, [refreshProcessingAgents]);
@@ -313,8 +331,17 @@ function ConsoleApp() {
   useEffect(() => { void loadRoot(); }, [loadRoot]);
   useEffect(() => { const resize = () => setViewportWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
   useEffect(() => { localStorage.setItem(shortcutStorageKey, sendShortcut); }, [sendShortcut]);
+  useEffect(() => { localStorage.setItem(chatsVisibleStorageKey, String(chatsVisible)); }, [chatsVisible]);
+  useEffect(() => { try { localStorage.setItem(uiStateStorageKey, JSON.stringify({ agentId, sessionKey })); } catch { /* armazenamento indisponível */ } }, [agentId, sessionKey]);
   useEffect(() => { currentSessionKeyRef.current = sessionKey; }, [sessionKey]);
-  useEffect(() => { setSessions([]); setSessionKey(""); setSessionsHasMore(false); setSessionsNextOffset(0); setMessages([]); if (agentId) void loadSessions(agentId); }, [agentId, loadSessions]);
+  useEffect(() => {
+    const firstLoad = initialRestoreRef.current;
+    if (!firstLoad) {
+      setSessions([]); setSessionKey(""); setSessionsHasMore(false); setSessionsNextOffset(0); setMessages([]);
+    }
+    if (agentId) void loadSessions(agentId);
+  }, [agentId, loadSessions]);
+  useEffect(() => { initialRestoreRef.current = false; }, []);
   useEffect(() => { setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
@@ -331,13 +358,24 @@ function ConsoleApp() {
   const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const fork = async () => { if (!selectedAgent || !selectedSession) return; const label = window.prompt("Nome do fork:", `Fork · ${selectedSession.label ?? selectedSession.title ?? "sessão"}`)?.trim(); if (!label) return; try { const result = await api.forkSession({ parentSessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
 
-  return <Box className={`console-shell theme-${themeName} view-${view}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
+  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
     {view === "agents" ? <AgentManagement agents={agents} models={models} status={status} loading={loading} onRefresh={loadRoot} onError={setError} /> : <>
       {!connected ? <GatewayOfflinePane status={status} /> : <>
-        <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
-          onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
-          onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />
-        <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} />
+        {isNarrow ? (
+          <>
+            {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+              onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
+              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} />
+          </>
+        ) : (
+          <>
+            {chatsVisible && <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+              onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
+              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsVisible((v) => !v)} />
+          </>
+        )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />
       </>}
     </>}
