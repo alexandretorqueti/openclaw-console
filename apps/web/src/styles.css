@@ -75,11 +75,11 @@ button, input, textarea { font: inherit; }
 .chat-header .MuiTypography-caption { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-header .MuiChip-root { height: 21px; font-size: .65rem; }
 .message-list { min-width: 0; min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding: 23px clamp(18px, 3.5vw, 52px); }
-.message-row { display: flex; align-items: flex-start; max-width: 100%; min-width: 0; gap: 10px; margin-bottom: 19px; }
-.message-row > .MuiAvatar-root { width: 34px; height: 34px; font-size: 16px; }
+.message-row { display: flex; align-items: flex-start; width: 100%; max-width: 100%; min-width: 0; gap: 10px; margin-bottom: 19px; }
+.message-row > .MuiAvatar-root { width: 34px; height: 34px; font-size: 16px; flex: 0 0 auto; }
 .message-row.user { justify-content: flex-end; }
-.message-bubble { width: min(650px, 90%); min-width: 0; overflow-wrap: anywhere; padding: 12px 14px; border: 1px solid rgba(130, 141, 177, .13); border-radius: 5px 15px 15px 15px; background: rgba(32, 39, 62, .62); box-shadow: 0 8px 24px rgba(0, 0, 0, .08); }
-.message-bubble.user { width: min(560px, 78%); border-color: rgba(121, 103, 237, .25); border-radius: 17px 5px 17px 17px; background: linear-gradient(140deg, rgba(102, 84, 217, .32), rgba(67, 75, 121, .25)); }
+.message-bubble { width: 100%; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; padding: 12px 14px; border: 1px solid rgba(130, 141, 177, .13); border-radius: 5px 15px 15px 15px; background: rgba(32, 39, 62, .62); box-shadow: 0 8px 24px rgba(0, 0, 0, .08); }
+.message-bubble.user { flex: 1 1 auto; border-color: rgba(121, 103, 237, .25); border-radius: 17px 5px 17px 17px; background: linear-gradient(140deg, rgba(102, 84, 217, .32), rgba(67, 75, 121, .25)); }
 .copy-message { width: 24px !important; height: 24px !important; margin-right: -5px !important; color: #7f88a5 !important; opacity: .52; }
 .copy-message svg { font-size: 14px; }
 .message-bubble:hover .copy-message, .copy-message:focus-visible { opacity: 1; }
