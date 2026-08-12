@@ -218,6 +218,10 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // O rascunho sobrevive à troca de chat/agente: o estado inicial vem do mapa de
   // rascunhos do ConsoleApp (por sessão) e toda alteração é propagada de volta.
   const [draft, setDraft] = useState(initialDraft);
+  // Ref espelho do rascunho, sempre atualizado no render: o debounce do Enter lê
+  // daqui (e não do closure do render), evitando estado obsoleto/draft vazio.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
   const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); clearEnterDebounce(); };
   const listRef = useRef<HTMLDivElement | null>(null);
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
@@ -237,6 +241,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // eventos de sessão e reconciliação periódica — o envio nunca trava por estado
   // local obsoleto, ex.: evento "final" perdido numa reconexão do SSE).
   const busy = processing || Boolean(session?.hasActiveRun);
+  // Ref espelho de "ocupado", para o debounce ler o valor vivo no disparo do timer.
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   const handleScroll = useCallback((list: HTMLDivElement) => {
     const distance = list.scrollHeight - list.clientHeight - list.scrollTop;
@@ -256,8 +263,10 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
 
   const submitDraft = async () => {
     clearEnterDebounce();
-    if (!draft.trim() || busy || loading) return;
-    const text = draft.trim();
+    // Lê sempre o valor vivo via refs — seguro para o debounce (setTimeout) chamar
+    // sem depender de closure de render.
+    const text = (draftRef.current || "").trim();
+    if (!text || busyRef.current || loading) return;
     setDraft("");
     onDraftChange("");
     stickToBottomRef.current = true;
@@ -324,12 +333,24 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       //
       // Modo ctrl-enter + Enter simples: insere quebra de linha e arma um debounce
       // de 1s — se o usuário parar de digitar, a mensagem é enviada sozinha.
-      if (event.key !== "Enter" || event.nativeEvent.isComposing) { clearEnterDebounce(); return; }
+      // NÃO dependemos de event.nativeEvent.isComposing para decidir: alguns
+      // teclados/Android deixam isComposing=true mesmo em Enter simples, o que
+      // impedia o debounce de armar ("enter não envia").
+      if (event.key !== "Enter") { clearEnterDebounce(); return; }
       const modifier = event.ctrlKey || event.metaKey;
+      const composing = event.nativeEvent.isComposing;
       const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
-      if (isSendCombination) { clearEnterDebounce(); if (busy || loading) return; event.preventDefault(); void submitDraft(); return; }
+      if (isSendCombination) {
+        clearEnterDebounce();
+        if (busyRef.current || loading || composing) return; // compono/ocupado: não envia
+        event.preventDefault();
+        void submitDraft();
+        return;
+      }
       // Enter de quebra de linha (Shift+Enter sempre, ou Enter no modo ctrl-enter):
-      if (busy || loading) { clearEnterDebounce(); return; }
+      // arma o debounce mesmo durante composição — o delay de 1s é justamente para
+      // deixar o usuário seguir digitando (ou o IME confirmar) sem enviar por engano.
+      if (busyRef.current || loading) { clearEnterDebounce(); return; }
       clearEnterDebounce();
       enterDebounceRef.current = setTimeout(() => { enterDebounceRef.current = undefined; void submitDraft(); }, 1000);
     }} />
