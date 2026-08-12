@@ -28,7 +28,62 @@ const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || 
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
 const startedAt = Date.now();
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info", redact: ["req.headers.authorization"] } });
+const app = Fastify({
+  logger: {
+    level: process.env.LOG_LEVEL ?? "info",
+    redact: ["req.headers.authorization"],
+    serializers: {
+      req(req) {
+        return {
+          method: req.method,
+          url: typeof req.url === "string" ? req.url.replace(/([?&]token=)[^&\s]+/g, "$1***") : req.url,
+          hostname: req.hostname,
+        };
+      },
+    },
+  },
+});
+const allowedCorsOrigin = (origin: string | undefined): boolean => {
+  if (!origin) return false;
+  if (origin === "https://ia.globaltecnologia.net") return true;
+  if (origin === "https://openclaw-console.pages.dev") return true;
+  if (origin.endsWith(".openclaw-console.pages.dev")) return true;
+  if (origin === "https://openclaw-api.webconnect.com.br") return true;
+  return false;
+};
+const buildCorsHeaders = (origin: string | undefined): Record<string, string> => {
+  if (!allowedCorsOrigin(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin as string,
+    "Vary": "Origin",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+  };
+};
+app.addHook("onRequest", async (request, reply) => {
+  const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+  for (const [key, value] of Object.entries(buildCorsHeaders(origin))) reply.header(key, value);
+  if (request.method === "OPTIONS") { reply.code(204).send(); return; }
+});
+const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN?.trim();
+if (!consoleToken) app.log.warn("OPENCLAW_CONSOLE_TOKEN is not set; /api endpoints are UNPROTECTED");
+const extractConsoleToken = (request: FastifyRequest): string | undefined => {
+  const auth = request.headers.authorization;
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  const query = request.query as Record<string, unknown>;
+  if (typeof query.token === "string") return query.token.trim();
+  return undefined;
+};
+app.addHook("onRequest", async (request, reply) => {
+  const path = request.url.split("?")[0];
+  if (!path.startsWith("/api/")) return;
+  if (!consoleToken) return;
+  if (extractConsoleToken(request) !== consoleToken) {
+    reply.code(401).send({ error: { code: "UNAUTHORIZED", message: "Invalid or missing access token" } });
+    return;
+  }
+});
 const gateway = new GatewayClient({
   url: gatewayUrl,
   token,
@@ -208,7 +263,8 @@ app.delete("/api/sessions", async (request) => {
 });
 app.get("/api/events", async (request: FastifyRequest, reply: FastifyReply) => {
   reply.hijack();
-  reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  const sseOrigin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+  reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no", ...buildCorsHeaders(sseOrigin) });
   sseClients.add(reply.raw); reply.raw.write(`event: status\ndata: ${JSON.stringify(status())}\n\n`);
   const heartbeat = setInterval(() => { try { reply.raw.write(": keepalive\n\n"); } catch { clearInterval(heartbeat); } }, 15_000);
   request.raw.on("close", () => { clearInterval(heartbeat); sseClients.delete(reply.raw); });

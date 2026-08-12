@@ -1,4 +1,5 @@
 import { OpenClawConsoleClient } from "@alexandretorqueti/openclaw-console-client";
+import { API_BASE_URL, getStoredToken } from "./auth";
 import type {
   Agent, AgentContextFile, ChatEvent as ContractChatEvent, ChatMessage, GatewayStatus as ContractGatewayStatus, ModelChoice, Session, SessionChangedEvent,
 } from "@alexandretorqueti/openclaw-console-contracts";
@@ -11,7 +12,7 @@ export type ApiModel = ModelChoice;
 export type ApiAgentContextFile = AgentContextFile;
 export type ChatEvent = ContractChatEvent;
 
-const client = new OpenClawConsoleClient();
+const client = new OpenClawConsoleClient({ baseUrl: API_BASE_URL, authToken: getStoredToken() });
 const messages = (rows: ChatMessage[]): ApiMessage[] => rows.map(({ createdAt, ...message }) => ({ ...message, timestamp: createdAt }));
 
 export const api = {

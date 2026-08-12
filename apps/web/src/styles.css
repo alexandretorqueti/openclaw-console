@@ -74,7 +74,7 @@ button, input, textarea { font: inherit; }
 .chat-header .MuiTypography-h6 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1rem; font-weight: 750; }
 .chat-header .MuiTypography-caption { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-header .MuiChip-root { height: 21px; font-size: .65rem; }
-.message-list { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 23px clamp(18px, 3.5vw, 52px); }
+.message-list { min-width: 0; min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding: 23px clamp(18px, 3.5vw, 52px); }
 .message-row { display: flex; align-items: flex-start; max-width: 100%; min-width: 0; gap: 10px; margin-bottom: 19px; }
 .message-row > .MuiAvatar-root { width: 34px; height: 34px; font-size: 16px; }
 .message-row.user { justify-content: flex-end; }

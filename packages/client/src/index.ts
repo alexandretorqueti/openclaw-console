@@ -58,6 +58,8 @@ import type { ZodTypeAny } from "zod";
 export interface ConsoleClientOptions {
   /** Defaults to `/api`, allowing same-origin deployments with no browser secrets. */
   baseUrl?: string;
+  /** Bearer token sent as `Authorization` header on requests and `?token=` on the SSE stream. */
+  authToken?: string;
   fetch?: typeof globalThis.fetch;
   eventSource?: typeof globalThis.EventSource;
   headers?: HeadersInit;
@@ -92,12 +94,14 @@ export class ConsoleContractError extends Error {
 
 export class OpenClawConsoleClient {
   private readonly baseUrl: string;
+  private readonly authToken: string | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly EventSourceImpl: typeof globalThis.EventSource | undefined;
   private readonly headers: HeadersInit | undefined;
 
   constructor(options: ConsoleClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/$/, "");
+    this.authToken = options.authToken;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.EventSourceImpl = options.eventSource ?? globalThis.EventSource;
     this.headers = options.headers;
@@ -197,7 +201,8 @@ export class OpenClawConsoleClient {
 
   subscribeEvents(handlers: ConsoleEventHandlers): () => void {
     if (!this.EventSourceImpl) throw new Error("EventSource is not available in this environment");
-    const source = new this.EventSourceImpl(this.url("/events"));
+    const eventsUrl = this.url("/events");
+    const source = new this.EventSourceImpl(this.authToken ? `${eventsUrl}?token=***this.authToken)}` : eventsUrl);
     const chat = (event: MessageEvent<string>) => this.handleSseData(event.data, ChatEventSchema, handlers.onChat, handlers.onError);
     const status = (event: MessageEvent<string>) =>
       this.handleSseData(event.data, GatewayStatusSchema, handlers.onStatus, handlers.onError);
@@ -252,6 +257,7 @@ export class OpenClawConsoleClient {
   private async request<T>(path: string, init: RequestInit, schema: ZodTypeAny): Promise<T> {
     const headers = new Headers(this.headers);
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    if (this.authToken && !headers.has("authorization")) headers.set("Authorization", `Bearer ${this.authToken}`);
     const response = await this.fetchImpl(this.url(path), { ...init, headers });
     const value = await readJson(response);
     if (!response.ok) {
