@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MutableRefObject, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
-  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, HubRounded, InfoOutlined, LightModeRounded, MoreVertRounded, PsychologyRounded,
+  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MoreVertRounded, PsychologyRounded,
   RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
 } from "@mui/icons-material";
@@ -125,7 +125,7 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
   </Box>;
 }
 
-function MessageBubble({ message, agent }: { message: ApiMessage; agent: ApiAgent }) {
+const MessageBubble = memo(function MessageBubble({ message, agent }: { message: ApiMessage; agent: ApiAgent }) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
@@ -137,7 +137,7 @@ function MessageBubble({ message, agent }: { message: ApiMessage; agent: ApiAgen
       <Stack direction="row" spacing={0.3} alignItems="center"><Typography variant="caption" color="text.secondary">{message.timestamp ? new Date(message.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : ""}</Typography>{!isUser && <Tooltip title={copied ? "Copiado" : "Copiar resposta"}><IconButton className="copy-message" size="small" aria-label="Copiar resposta" onClick={() => void copyText(messageText(message)).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); })}><ContentCopyRounded /></IconButton></Tooltip>}</Stack>
     </Stack><Typography variant="body2" className="message-content">{messageText(message)}</Typography></Box>
   </Box>;
-}
+});
 async function copyText(value: string) { if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); return; } const area = document.createElement("textarea"); area.value = value; area.style.position = "fixed"; area.style.opacity = "0"; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove(); }
 
 type DisplayMessage = { kind: "message"; message: ApiMessage } | { kind: "activity"; id: string; messages: ApiMessage[] } | { kind: "thinking"; id: string; content: string };
@@ -208,33 +208,120 @@ function toolActivityPreview(message: ApiMessage) {
 }
 
 type SendShortcut = "enter" | "ctrl-enter";
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, scrollPositions, models, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
+// Região mínima considerada "fim da lista": só autoscrolla quando o scroll
+// já estiver colado no final (menos de ~0.5cm). Se o usuário subir 1cm, para.
+const NEAR_BOTTOM_PX = 32;
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
-  scrollPositions: MutableRefObject<Map<string, number>>; models: ApiModel[]; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
+  models: ApiModel[]; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
 }) {
   const [draft, setDraft] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
-  const restoredRef = useRef(false); const nearBottomRef = useRef(true);
-  useEffect(() => { if (loading || !session) return; const list = listRef.current; if (!list) return; const frame = requestAnimationFrame(() => { const saved = scrollPositions.current.get(session.key); const maximum = Math.max(0, list.scrollHeight - list.clientHeight); list.scrollTop = saved === undefined ? maximum : Math.min(saved, maximum); nearBottomRef.current = maximum - list.scrollTop < 80; restoredRef.current = true; }); return () => cancelAnimationFrame(frame); }, [loading, session?.key, scrollPositions]);
-  useEffect(() => { if (loading || !restoredRef.current || !nearBottomRef.current) return; const list = listRef.current; if (!list) return; const frame = requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; if (session) scrollPositions.current.set(session.key, list.scrollTop); }); return () => cancelAnimationFrame(frame); }, [loading, messages, streamText, session?.key, scrollPositions]);
-  useEffect(() => () => { const list = listRef.current; if (list && session) scrollPositions.current.set(session.key, list.scrollTop); }, [session?.key, scrollPositions]);
-  const submitDraft = async () => { if (!draft.trim() || processing || loading) return; const text = draft.trim(); setDraft(""); await onSend(text); };
-  const send = async (event: FormEvent) => { event.preventDefault(); await submitDraft(); };
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const textareaInputRef = useRef<HTMLInputElement | null>(null);
+  // Política ÚNICA de rolagem: "grudar no fundo". Toda sessão abre no final
+  // (stick=true) e o próprio evento de scroll mantém o estado — rolar para cima
+  // desliga o acompanhamento, voltar ao fundo religa. Sem posições salvas em mapa,
+  // sem efeitos concorrentes: uma única escrita de scrollTop por atualização de
+  // conteúdo, em useLayoutEffect (antes do paint), o que elimina pulos e tremidas.
+  const stickToBottomRef = useRef(true);
+  const [showJumpToEnd, setShowJumpToEnd] = useState(false);
+  // busy = processando OU com run ativo segundo o Gateway (hasActiveRun chega via
+  // eventos de sessão e reconciliação periódica — o envio nunca trava por estado
+  // local obsoleto, ex.: evento "final" perdido numa reconexão do SSE).
+  const busy = processing || Boolean(session?.hasActiveRun);
+
+  const handleScroll = useCallback((list: HTMLDivElement) => {
+    const distance = list.scrollHeight - list.clientHeight - list.scrollTop;
+    const atBottom = distance < NEAR_BOTTOM_PX;
+    stickToBottomRef.current = atBottom;
+    setShowJumpToEnd((current) => { const next = !atBottom && list.scrollHeight > list.clientHeight; return current === next ? current : next; });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (loading) return;
+    const list = listRef.current;
+    if (!list || !stickToBottomRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [loading, messages, streamText]);
+
+  const jumpToEnd = useCallback(() => { const list = listRef.current; if (!list) return; stickToBottomRef.current = true; list.scrollTop = list.scrollHeight; setShowJumpToEnd(false); }, []);
+
+  const submitDraft = async () => {
+    if (!draft.trim() || busy || loading) return;
+    const text = draft.trim();
+    setDraft("");
+    stickToBottomRef.current = true;
+    setShowJumpToEnd(false);
+    await onSend(text);
+  };
+  const sendForm = async (event: FormEvent) => {
+    event.preventDefault();
+    await submitDraft();
+    // Retorna o foco para o textarea após enviar
+    requestAnimationFrame(() => { textareaInputRef.current?.focus(); });
+  };
+
   if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
+
+  const streamMessage = streamText ? { id: "live-stream", role: "assistant" as const, author: agent.name, content: streamText } : undefined;
+  // Quando a última mensagem persistida já contém exatamente o texto em streaming,
+  // ela assume a key fixa "live-stream" e a bolha avulsa não é renderizada: o React
+  // reutiliza o mesmo DOM na transição streaming → histórico, sem piscada.
+  const tailMatchesStream = Boolean(streamMessage) && (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "tool") continue;
+      return message.role === "assistant" && message.content.trim() === streamText.trim();
+    }
+    return false;
+  })();
+  const tailReusesStreamKey = !streamMessage || tailMatchesStream;
+  // useMemo: o agrupamento e os elementos da lista só são refeitos quando as
+  // mensagens mudam de fato — os deltas do stream NÃO re-renderizam a lista,
+  // apenas a bolha de streaming (fora do useMemo).
+  const messageItems = useMemo(() => {
+    const display = groupDisplayMessages(messages);
+    let lastMessageIndex = -1;
+    for (let index = display.length - 1; index >= 0; index -= 1) if (display[index].kind === "message") { lastMessageIndex = index; break; }
+    return display.map((item, index) => {
+      if (item.kind === "activity") return <TechnicalActivity key={item.id} messages={item.messages} />;
+      if (item.kind === "thinking") return <ThinkingActivity key={item.id} content={item.content} />;
+      const key = index === lastMessageIndex && tailReusesStreamKey ? "live-stream" : item.message.id;
+      return <MessageBubble key={key} message={item.message} agent={agent} />;
+    });
+  }, [messages, agent, tailReusesStreamKey]);
+
   return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Tooltip title={mobile ? "Abrir conversas" : "Ocultar/mostrar conversas"}><IconButton size="small" className="toggle-chats" onClick={onToggleChats}><ChatBubbleOutlineRounded fontSize="small" /></IconButton></Tooltip><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
     <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box>
     <Stack direction="row" spacing={0.6} alignItems="center" className="chat-header-controls">
       <Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>
       <Tooltip title="Detalhes da sessão"><IconButton size="small" onClick={onShowDetails}><DataObjectRounded fontSize="small" /></IconButton></Tooltip>
-      {processing && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
+      {busy && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
       <Tooltip title="Criar fork"><IconButton size="small" onClick={onFork}><CallSplitRounded fontSize="small" /></IconButton></Tooltip>
     </Stack></Box>
-    <Box className="message-list" ref={listRef} onScroll={(event) => { const list = event.currentTarget; scrollPositions.current.set(session.key, list.scrollTop); nearBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop < 80; }}>{loading ? <Box className="loading-chat"><CircularProgress size={28} /></Box> : groupDisplayMessages(messages).map((item) => item.kind === "activity" ? <TechnicalActivity key={item.id} messages={item.messages} /> : item.kind === "thinking" ? <ThinkingActivity key={item.id} content={item.content} /> : <MessageBubble key={item.message.id} message={item.message} agent={agent} />)}
-      {streamText && <MessageBubble message={{ id: "live-stream", role: "assistant", author: agent.name, content: streamText }} agent={agent} />}</Box>
-    <Box component="form" onSubmit={send} className="composer-wrap"><Paper className="composer" elevation={0}><TextField multiline maxRows={5} fullWidth disabled={loading || processing} placeholder={loading ? "Carregando histórico…" : processing ? "Aguarde o término do processamento…" : `Conversar com ${agent.name} nesta sessão…`} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(event) => { if (processing || loading || event.key !== "Enter" || event.nativeEvent.isComposing) return; const ctrl = event.ctrlKey || event.metaKey; if (sendShortcut === "enter" && ctrl) { event.preventDefault(); const textarea = event.target as HTMLTextAreaElement; const start = textarea.selectionStart; const end = textarea.selectionEnd; setDraft((current) => `${current.slice(0, start)}\n${current.slice(end)}`); requestAnimationFrame(() => textarea.setSelectionRange(start + 1, start + 1)); return; } const shouldSend = sendShortcut === "enter" ? !event.shiftKey : ctrl; if (shouldSend) { event.preventDefault(); void submitDraft(); } }} variant="standard" InputProps={{ disableUnderline: true }} />
-      <Stack direction="row" justifyContent="flex-end" alignItems="center" sx={{ mt: 1 }}>{processing && <Box className="composer-processing" role="status" aria-live="polite" sx={{ mr: "auto" }}><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
+    <Box sx={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}><Box className="message-list" ref={listRef} onScroll={(event) => handleScroll(event.currentTarget)}>
+      {loading && messages.length === 0 && !streamText ? <Box className="loading-chat"><CircularProgress size={28} /></Box> : messageItems}
+      {streamMessage && !tailMatchesStream && <MessageBubble key="live-stream" message={streamMessage} agent={agent} />}
+    </Box>
+      {showJumpToEnd && <Tooltip title="Ir para o final"><IconButton aria-label="Ir para o final" onClick={jumpToEnd} sx={{ position: "absolute", right: 12, bottom: 12, bgcolor: "background.paper", boxShadow: 2, "&:hover": { bgcolor: "action.hover" } }}><KeyboardArrowDownRounded /></IconButton></Tooltip>}</Box>
+    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(event) => {
+      // Regra única de envio, fiel ao atalho configurado:
+      //  - "enter": Enter envia; Shift+Enter quebra linha.
+      //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
+      // Durante a resposta (busy) o atalho de envio vira quebra de linha, permitindo
+      // adiantar o próximo texto — mas o envio em si nunca fica "inalcançável": no
+      // modo ctrl-enter, Ctrl+Enter envia assim que o agente termina.
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+      const modifier = event.ctrlKey || event.metaKey;
+      const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
+      if (!isSendCombination) return; // comportamento nativo do textarea: quebra de linha
+      if (busy || loading) return; // aguardando resposta: quebra de linha nativa
+      event.preventDefault();
+      void submitDraft();
+    }} variant="standard" InputProps={{ disableUnderline: true }} />
+      <Stack direction="row" justifyContent="flex-end" alignItems="center" sx={{ mt: 1 }}>{busy && <Box className="composer-processing" role="status" aria-live="polite" sx={{ mr: "auto" }}><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
       <Tooltip title="Trocar modelo"><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
-      <Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || processing || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
+      <Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
 }
 
@@ -309,16 +396,22 @@ function ConsoleApp() {
   const [processing, setProcessing] = useState(false); const processingBySessionRef = useRef(new Map<string, boolean>()); const [processingAgentIds, setProcessingAgentIds] = useState<Set<string>>(() => new Set());
   const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
   const [chatsVisible, setChatsVisible] = useState<boolean>(loadChatsVisible);
+  // Coluna fixa de conversas no modo desktop: estado separado do overlay mobile,
+  // sempre inicia visível para nunca produzir uma coluna de largura 0 no grid.
+  const [chatsColumnVisible, setChatsColumnVisible] = useState<boolean>(true);
   const optimisticMessagesRef = useRef(new Map<string, ApiMessage[]>());
-  const scrollPositionsRef = useRef(new Map<string, number>());
   const [runId, setRunId] = useState<string>(); const [streamText, setStreamText] = useState("");
+  // Guarda o último texto do stream (fallback) + o flag de terminal para a transição
+  // suave: a bolha de streaming permanece visível até o histórico persistido chegar,
+  // evitando o frame vazio ("piscadinha") ao terminar a escrita do agente.
+  const terminalTextRef = useRef<string | undefined>(undefined);
   const selectedAgent = agents.find((agent) => agent.id === agentId); const selectedSession = sessions.find((session) => session.key === sessionKey); const selectedSessionAgentId = selectedSession ? sessionAgentId(selectedSession) : agentId; const connected = Boolean(status?.connected);
   const isNarrow = viewportWidth <= 900;
   const gridColumns = useMemo(() => {
     if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
     if (isNarrow) return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
-    return `${viewportWidth <= 720 ? 58 : 68}px ${chatsVisible ? "minmax(240px, 300px)" : "0px"} minmax(0, 1fr)`;
-  }, [view, viewportWidth, chatsVisible, isNarrow]);
+    return `${viewportWidth <= 720 ? 58 : 68}px ${chatsColumnVisible ? "minmax(240px, 300px)" : "minmax(0, 0px)"} minmax(0, 1fr)`;
+  }, [view, viewportWidth, chatsColumnVisible, isNarrow]);
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) processingBySessionRef.current.set(session.key, session.hasActiveRun); }); refreshProcessingAgents(); }, [refreshProcessingAgents]);
@@ -326,7 +419,7 @@ function ConsoleApp() {
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
   const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => rows.some((s) => s.key === current) ? current : rows[0]?.key ?? ""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
   const refreshSessionMetadata = useCallback(async (key: string, id: string) => { try { const page = await api.sessions(id, 0, 200); const fresh = page.sessions.find((session) => session.key === key); if (!fresh) return; processingBySessionRef.current.set(key, fresh.hasActiveRun); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key ? { ...session, ...fresh } : session)); } catch { /* A próxima atualização SSE ou sondagem reconciliará os metadados. */ } }, [refreshProcessingAgents]);
-  const loadHistory = useCallback(async (key: string, id: string) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages([...history.messages, ...unresolved]); setSessionId(history.sessionId); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setHistoryLoading(false); } }, []);
+  const loadHistory = useCallback(async (key: string, id: string) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages([...history.messages, ...unresolved]); setSessionId(history.sessionId); setStreamText(""); terminalTextRef.current = undefined; /* a resposta persistida assume a key fixa "live-stream" no render, reutilizando a mesma bolha do streaming sem remontar */ } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setHistoryLoading(false); } }, []);
   useEffect(() => { void loadRoot(); }, [loadRoot]);
   useEffect(() => { const resize = () => setViewportWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
   useEffect(() => { localStorage.setItem(shortcutStorageKey, sendShortcut); }, [sendShortcut]);
@@ -344,12 +437,12 @@ function ConsoleApp() {
   useEffect(() => { setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
-  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) return; if (event.state === "delta") { setProcessing(true); setStreamText((current) => event.replace ? event.deltaText ?? "" : current + (event.deltaText ?? "")); }
-    if (isTerminal) { const owner = agentIdFromSessionKey(sessionKey, event.agentId ?? agentId) ?? agentId; setProcessing(false); setRunId(undefined); setStreamText(""); void Promise.all([loadHistory(sessionKey, owner), refreshSessionMetadata(sessionKey, owner)]); window.setTimeout(() => void refreshSessionMetadata(sessionKey, owner), 800); if ("errorMessage" in event && event.errorMessage) setError(event.errorMessage); }
+  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) return; if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
+    if (isTerminal) { const owner = agentIdFromSessionKey(sessionKey, event.agentId ?? agentId) ?? agentId; setProcessing(false); setRunId(undefined); void Promise.all([loadHistory(sessionKey, owner), refreshSessionMetadata(sessionKey, owner)]).catch(() => { setStreamText(""); terminalTextRef.current = undefined; }); window.setTimeout(() => void refreshSessionMetadata(sessionKey, owner), 800); if ("errorMessage" in event && event.errorMessage) setError(event.errorMessage); }
   } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing]);
-  useEffect(() => { if (!processing || !sessionKey || !selectedSessionAgentId) return; let cancelled = false; let inactiveChecks = 0; let timer: ReturnType<typeof setTimeout> | undefined; const reconcile = async () => { try { const page = await api.sessions(selectedSessionAgentId, 0, 200); const current = page.sessions.find((session) => session.key === sessionKey); if (current?.hasActiveRun) inactiveChecks = 0; else if (current && ++inactiveChecks >= 2) { cancelled = true; setSessionProcessing(sessionKey, false); if (currentSessionKeyRef.current === sessionKey) { setProcessing(false); setRunId(undefined); setStreamText(""); await Promise.all([loadHistory(sessionKey, selectedSessionAgentId), refreshSessionMetadata(sessionKey, selectedSessionAgentId)]); } } } catch { /* SSE remains authoritative while reconciliation is unavailable. */ } finally { if (!cancelled) timer = setTimeout(() => void reconcile(), 5_000); } }; timer = setTimeout(() => void reconcile(), 4_000); return () => { cancelled = true; if (timer) clearTimeout(timer); }; }, [processing, sessionKey, selectedSessionAgentId, loadHistory, refreshSessionMetadata, setSessionProcessing]);
+  useEffect(() => { if (!processing || !sessionKey || !selectedSessionAgentId) return; let cancelled = false; let inactiveChecks = 0; let timer: ReturnType<typeof setTimeout> | undefined; const reconcile = async () => { try { const page = await api.sessions(selectedSessionAgentId, 0, 200); const current = page.sessions.find((session) => session.key === sessionKey); if (current?.hasActiveRun) inactiveChecks = 0; else if (current && ++inactiveChecks >= 2) { cancelled = true; setSessionProcessing(sessionKey, false); if (currentSessionKeyRef.current === sessionKey) { setProcessing(false); setRunId(undefined); await Promise.all([loadHistory(sessionKey, selectedSessionAgentId), refreshSessionMetadata(sessionKey, selectedSessionAgentId)]); } } } catch { /* SSE remains authoritative while reconciliation is unavailable. */ } finally { if (!cancelled) timer = setTimeout(() => void reconcile(), 5_000); } }; timer = setTimeout(() => void reconcile(), 4_000); return () => { cancelled = true; if (timer) clearTimeout(timer); }; }, [processing, sessionKey, selectedSessionAgentId, loadHistory, refreshSessionMetadata, setSessionProcessing]);
   const loadMoreSessions = useCallback(() => { if (agentId && sessionsHasMore && !sessionsLoading && !sessionsLoadingMore) void loadSessions(agentId, sessionsNextOffset, true); }, [agentId, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset, loadSessions]);
-  const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const wasAutoNamed = /^Chat \d+$/i.test(selectedSession.label ?? selectedSession.title ?? ""); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } else if (wasAutoNamed && !/^\/(?:model|new|fork|abort)/i.test(message.trim())) { const suggested = suggestSessionName(message); if (suggested && suggested !== (selectedSession.label ?? selectedSession.title)) { try { await api.patchSession({ key: targetSessionKey, agentId: targetAgentId, label: suggested }); setSessions((current) => current.map((item) => item.key === targetSessionKey ? { ...item, label: suggested, title: suggested } : item)); } catch { /* renomeio não crítico */ } } } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
+  const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const wasAutoNamed = /^Chat \d+$/i.test(selectedSession.label ?? selectedSession.title ?? ""); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); terminalTextRef.current = undefined; flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } else if (wasAutoNamed && !/^\/(?:model|new|fork|abort)/i.test(message.trim())) { const suggested = suggestSessionName(message); if (suggested && suggested !== (selectedSession.label ?? selectedSession.title)) { try { await api.patchSession({ key: targetSessionKey, agentId: targetAgentId, label: suggested }); setSessions((current) => current.map((item) => item.key === targetSessionKey ? { ...item, label: suggested, title: suggested } : item)); } catch { /* renomeio não crítico */ } } } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
   const abort = async () => { if (!selectedSession) return; await api.abort({ sessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), runId }); };
   const nextChatNumber = (targetAgentId: string) => { const existing = sessions.filter((session) => sessionAgentId(session) === targetAgentId && /^Chat \d+$/i.test(session.label ?? session.title ?? "")); const used = new Set(existing.map((session) => Number((session.label ?? session.title ?? "").match(/\d+/)?.[0] ?? 0))); let n = 1; while (used.has(n)) n += 1; return n; };
   const create = async (targetAgentId?: string) => { const target = agents.find((agent) => agent.id === (targetAgentId ?? agentId)); if (!target) return; const label = `Chat ${String(nextChatNumber(target.id)).padStart(2, "0")}`; try { const result = await api.createSession({ agentId: target.id, label }); await loadSessions(target.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
@@ -357,7 +450,7 @@ function ConsoleApp() {
   const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const fork = async () => { if (!selectedAgent || !selectedSession) return; const label = window.prompt("Nome do fork:", `Fork · ${selectedSession.label ?? selectedSession.title ?? "sessão"}`)?.trim(); if (!label) return; try { const result = await api.forkSession({ parentSessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
 
-  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
+  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
     {view === "agents" ? <AgentManagement agents={agents} models={models} status={status} loading={loading} onRefresh={loadRoot} onError={setError} /> : <>
       {!connected ? <GatewayOfflinePane status={status} /> : <>
         {isNarrow ? (
@@ -365,14 +458,14 @@ function ConsoleApp() {
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} />
           </>
         ) : (
           <>
-            {chatsVisible && <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+            {chatsColumnVisible && <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} scrollPositions={scrollPositionsRef} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsVisible((v) => !v)} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} />
           </>
         )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />
