@@ -121,7 +121,13 @@ button, input, textarea { font: inherit; }
 .typing span { width: 6px; height: 6px; border-radius: 50%; background: #7c6df2; animation: pulse 1s infinite alternate; }.typing span:nth-child(2){animation-delay:.15s}.typing span:nth-child(3){animation-delay:.3s}.typing p{margin-left:6px}
 @keyframes pulse { to { transform: translateY(-4px); opacity: .4; } }
 .composer-wrap { min-width: 0; padding: 0 clamp(18px, 3.5vw, 52px) 15px; text-align: center; }
-.composer { min-width: 0; padding: 11px 12px 9px; text-align: left; border: 1px solid rgba(130, 141, 177, .2); border-radius: 14px !important; background: rgba(24, 30, 49, .93) !important; box-shadow: 0 12px 38px rgba(0, 0, 0, .18) !important; }
+.composer { min-width: 0; overflow: hidden; text-align: left; border: 1px solid rgba(130, 141, 177, .2); border-radius: 14px !important; background: rgba(24, 30, 49, .93) !important; box-shadow: 0 12px 38px rgba(0, 0, 0, .18) !important; }
+.composer .MuiTextField-root { padding: 12px 14px 6px; }
+.composer .MuiInputBase-root { align-items: flex-start; }
+/* Barra de controles do composer: fundo e borda próprios, bem distinta da área de
+   texto, para deixar claro onde é o campo de escrita e onde são os controles. */
+.composer-controls { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px solid rgba(130, 141, 177, .18); background: rgba(8, 12, 23, .5); }
+.theme-claro .composer-controls { border-top-color: rgba(42, 51, 78, .12); background: #eef1f7; }
 .composer-wrap > .MuiTypography-caption { display: block; margin-top: 7px; font-size: .65rem; }
 .composer .MuiChip-root { height: 22px; font-size: .65rem; }
 .composer-processing { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; padding: 0 7px; border-radius: 11px; color: #8e83ef; background: rgba(124, 109, 242, .1); }
@@ -193,8 +199,8 @@ button, input, textarea { font: inherit; }
   .message-list { padding: 22px 14px; }
   .composer-wrap { padding: 0 12px 12px; }
   .chat-header { padding: 12px 16px; }
-  .composer > .MuiStack-root { align-items: flex-start; flex-wrap: wrap; gap: 7px; }
-  .composer > .MuiStack-root > .MuiStack-root:first-child { max-width: 100%; flex-wrap: wrap; }
+  .composer-controls { flex-wrap: wrap; }
+  .composer-controls .model-select { max-width: 100%; }
   .send-shortcut { min-width: 118px; }
   .model-select { max-width: 150px; }
   .management-header { align-items: stretch; flex-direction: column; }

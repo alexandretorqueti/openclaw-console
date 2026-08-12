@@ -211,11 +211,14 @@ type SendShortcut = "enter" | "ctrl-enter";
 // Região mínima considerada "fim da lista": só autoscrolla quando o scroll
 // já estiver colado no final (menos de ~0.5cm). Se o usuário subir 1cm, para.
 const NEAR_BOTTOM_PX = 32;
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
-  models: ApiModel[]; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
+  models: ApiModel[]; initialDraft?: string; onDraftChange: (text: string) => void; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
 }) {
-  const [draft, setDraft] = useState("");
+  // O rascunho sobrevive à troca de chat/agente: o estado inicial vem do mapa de
+  // rascunhos do ConsoleApp (por sessão) e toda alteração é propagada de volta.
+  const [draft, setDraft] = useState(initialDraft);
+  const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); };
   const listRef = useRef<HTMLDivElement | null>(null);
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
   // Política ÚNICA de rolagem: "grudar no fundo". Toda sessão abre no final
@@ -250,6 +253,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     if (!draft.trim() || busy || loading) return;
     const text = draft.trim();
     setDraft("");
+    onDraftChange("");
     stickToBottomRef.current = true;
     setShowJumpToEnd(false);
     await onSend(text);
@@ -304,7 +308,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       {streamMessage && !tailMatchesStream && <MessageBubble key="live-stream" message={streamMessage} agent={agent} />}
     </Box>
       {showJumpToEnd && <Tooltip title="Ir para o final"><IconButton aria-label="Ir para o final" onClick={jumpToEnd} sx={{ position: "absolute", right: 12, bottom: 12, bgcolor: "background.paper", boxShadow: 2, "&:hover": { bgcolor: "action.hover" } }}><KeyboardArrowDownRounded /></IconButton></Tooltip>}</Box>
-    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(event) => {
+    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} onKeyDown={(event) => {
       // Regra única de envio, fiel ao atalho configurado:
       //  - "enter": Enter envia; Shift+Enter quebra linha.
       //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
@@ -319,9 +323,13 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       event.preventDefault();
       void submitDraft();
     }} variant="standard" InputProps={{ disableUnderline: true }} />
-      <Stack direction="row" justifyContent="flex-end" alignItems="center" sx={{ mt: 1 }}>{busy && <Box className="composer-processing" role="status" aria-live="polite" sx={{ mr: "auto" }}><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
-      <Tooltip title="Trocar modelo"><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
-      <Stack direction="row" spacing={0.5} alignItems="center"><Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select><IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton></Stack></Stack></Paper>
+      <Box className="composer-controls">
+        {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
+        <Tooltip title="Trocar modelo"><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
+        <Box sx={{ flex: 1 }} />
+        <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
+        <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
+      </Box></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
 }
 
@@ -400,6 +408,7 @@ function ConsoleApp() {
   // sempre inicia visível para nunca produzir uma coluna de largura 0 no grid.
   const [chatsColumnVisible, setChatsColumnVisible] = useState<boolean>(true);
   const optimisticMessagesRef = useRef(new Map<string, ApiMessage[]>());
+  const draftsRef = useRef(new Map<string, string>());
   const [runId, setRunId] = useState<string>(); const [streamText, setStreamText] = useState("");
   // Guarda o último texto do stream (fallback) + o flag de terminal para a transição
   // suave: a bolha de streaming permanece visível até o histórico persistido chegar,
@@ -458,14 +467,14 @@ function ConsoleApp() {
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} />
           </>
         ) : (
           <>
             {chatsColumnVisible && <ChatsPanel agents={agents} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} />
           </>
         )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />
