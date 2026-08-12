@@ -218,9 +218,14 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // O rascunho sobrevive à troca de chat/agente: o estado inicial vem do mapa de
   // rascunhos do ConsoleApp (por sessão) e toda alteração é propagada de volta.
   const [draft, setDraft] = useState(initialDraft);
-  const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); };
+  const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); clearEnterDebounce(); };
   const listRef = useRef<HTMLDivElement | null>(null);
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
+  // Timer do "Enter com debounce": no modo ctrl-enter, Enter quebra linha; se o
+  // usuário não digitar mais nada em 1s, a mensagem é enviada automaticamente.
+  const enterDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const clearEnterDebounce = useCallback(() => { if (enterDebounceRef.current) { clearTimeout(enterDebounceRef.current); enterDebounceRef.current = undefined; } }, []);
+  useEffect(() => clearEnterDebounce, [clearEnterDebounce]);
   // Política ÚNICA de rolagem: "grudar no fundo". Toda sessão abre no final
   // (stick=true) e o próprio evento de scroll mantém o estado — rolar para cima
   // desliga o acompanhamento, voltar ao fundo religa. Sem posições salvas em mapa,
@@ -250,6 +255,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const jumpToEnd = useCallback(() => { const list = listRef.current; if (!list) return; stickToBottomRef.current = true; list.scrollTop = list.scrollHeight; setShowJumpToEnd(false); }, []);
 
   const submitDraft = async () => {
+    clearEnterDebounce();
     if (!draft.trim() || busy || loading) return;
     const text = draft.trim();
     setDraft("");
@@ -308,21 +314,25 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       {streamMessage && !tailMatchesStream && <MessageBubble key="live-stream" message={streamMessage} agent={agent} />}
     </Box>
       {showJumpToEnd && <Tooltip title="Ir para o final"><IconButton aria-label="Ir para o final" onClick={jumpToEnd} sx={{ position: "absolute", right: 12, bottom: 12, bgcolor: "background.paper", boxShadow: 2, "&:hover": { bgcolor: "action.hover" } }}><KeyboardArrowDownRounded /></IconButton></Tooltip>}</Box>
-    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} onKeyDown={(event) => {
+    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
       // Regra única de envio, fiel ao atalho configurado:
       //  - "enter": Enter envia; Shift+Enter quebra linha.
       //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
       // Durante a resposta (busy) o atalho de envio vira quebra de linha, permitindo
       // adiantar o próximo texto — mas o envio em si nunca fica "inalcançável": no
       // modo ctrl-enter, Ctrl+Enter envia assim que o agente termina.
-      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+      //
+      // Modo ctrl-enter + Enter simples: insere quebra de linha e arma um debounce
+      // de 1s — se o usuário parar de digitar, a mensagem é enviada sozinha.
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) { clearEnterDebounce(); return; }
       const modifier = event.ctrlKey || event.metaKey;
       const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
-      if (!isSendCombination) return; // comportamento nativo do textarea: quebra de linha
-      if (busy || loading) return; // aguardando resposta: quebra de linha nativa
-      event.preventDefault();
-      void submitDraft();
-    }} variant="standard" InputProps={{ disableUnderline: true }} />
+      if (isSendCombination) { clearEnterDebounce(); if (busy || loading) return; event.preventDefault(); void submitDraft(); return; }
+      // Enter de quebra de linha (Shift+Enter sempre, ou Enter no modo ctrl-enter):
+      if (busy || loading) { clearEnterDebounce(); return; }
+      clearEnterDebounce();
+      enterDebounceRef.current = setTimeout(() => { enterDebounceRef.current = undefined; void submitDraft(); }, 1000);
+    }} />
       <Box className="composer-controls">
         {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
         <Tooltip title="Trocar modelo"><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
