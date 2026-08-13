@@ -202,7 +202,7 @@ export class OpenClawConsoleClient {
   subscribeEvents(handlers: ConsoleEventHandlers): () => void {
     if (!this.EventSourceImpl) throw new Error("EventSource is not available in this environment");
     const eventsUrl = this.url("/events");
-    const source = new this.EventSourceImpl(this.authToken ? `${eventsUrl}?token=***this.authToken)}` : eventsUrl);
+    const source = new this.EventSourceImpl(this.authToken ? `${eventsUrl}?token=${encodeURIComponent(this.authToken)}` : eventsUrl);
     const chat = (event: MessageEvent<string>) => this.handleSseData(event.data, ChatEventSchema, handlers.onChat, handlers.onError);
     const status = (event: MessageEvent<string>) =>
       this.handleSseData(event.data, GatewayStatusSchema, handlers.onStatus, handlers.onError);
