@@ -303,11 +303,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           // Comandos customizados de pontuação (português)
           // Primeiro, remove espaços antes das palavras de pontuação
           transcript = transcript
-            .replace(/\s+\bnovo par[áa]grafo\b/gi, "\n\n")
             .replace(/\s+\bpar[áa]grafo\b/gi, "\n\n")
-            .replace(/\s+\bpula linha\b/gi, "\n")
-            .replace(/\s+\bquebra linha\b/gi, "\n")
-            .replace(/\s+\bnova linha\b/gi, "\n")
             .replace(/\s+\bdois pontos\b/gi, ":")
             .replace(/\s+\bponto e v[íi]rgula\b/gi, ";")
             .replace(/\s+\binterroga[çc][ãa]o\b/gi, "?")
@@ -317,17 +313,18 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           
           // Depois, substitui as palavras que estão no início
           transcript = transcript
-            .replace(/^novo par[áa]grafo\b/gi, "\n\n")
             .replace(/^par[áa]grafo\b/gi, "\n\n")
-            .replace(/^pula linha\b/gi, "\n")
-            .replace(/^quebra linha\b/gi, "\n")
-            .replace(/^nova linha\b/gi, "\n")
             .replace(/^dois pontos\b/gi, ":")
             .replace(/^ponto e v[íi]rgula\b/gi, ";")
             .replace(/^interroga[çc][ãa]o\b/gi, "?")
             .replace(/^exclama[çc][ãa]o\b/gi, "!")
             .replace(/^v[íi]rgula\b/gi, ",")
             .replace(/^ponto\b/gi, ".");
+          
+          // Capitaliza letra após pontuação final (. ? !) e após parágrafo
+          transcript = transcript
+            .replace(/([.?!])\s+([a-zà-ÿ])/g, (_m, punct, letter) => `${punct} ${letter.toUpperCase()}`)
+            .replace(/\n\n\s*([a-zà-ÿ])/g, (_m, letter) => `\n\n${letter.toUpperCase()}`);
           
           // Comando para enviar mensagem
           if (/^\s*remeter\s*$/i.test(transcript)) {
