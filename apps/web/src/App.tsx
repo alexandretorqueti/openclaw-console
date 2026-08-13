@@ -297,7 +297,22 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       let text = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
-        if (result.isFinal) text += result[0].transcript;
+        if (result.isFinal) {
+          let transcript = result[0].transcript;
+          
+          // Comandos customizados de pontuação (português)
+          transcript = transcript
+            .replace(/\bnovo parágrafo\b/gi, "\n\n")
+            .replace(/\bnova linha\b/gi, "\n")
+            .replace(/\bdois pontos\b/gi, ":")
+            .replace(/\bponto e vírgula\b/gi, ";")
+            .replace(/\binterrogação\b/gi, "?")
+            .replace(/\bexclamação\b/gi, "!")
+            .replace(/\bvírgula\b/gi, ",")
+            .replace(/\bponto\b/gi, ".");
+          
+          text += transcript;
+        }
       }
       text = text.trim();
       if (!text) return;
@@ -593,6 +608,7 @@ function ConsoleApp() {
           messages={groupState.messages}
           onSend={groupState.handleSendMessage}
           onManageAgents={() => groupState.setManageDialogOpen(true)}
+          sendingToAgents={groupState.sendingToAgents}
         />
       ) : (
         <Box className="agent-empty">
