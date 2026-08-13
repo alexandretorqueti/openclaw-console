@@ -28,9 +28,15 @@ export const clearToken = (): void => {
 
 export const validateToken = async (token: string): Promise<boolean> => {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+    
     const response = await fetch(`${API_BASE_URL}/status`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
     });
+    
+    clearTimeout(timeoutId);
     return response.ok;
   } catch {
     return false;
