@@ -413,12 +413,56 @@ export function GroupChatPane({
       let text = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
-        if (result.isFinal) text += result[0].transcript;
+        if (result.isFinal) {
+          let transcript = result[0].transcript;
+          
+          // Comandos customizados de pontuação (português)
+          // Primeiro, remove espaços antes das palavras de pontuação
+          transcript = transcript
+            .replace(/\s+\bpar[áa]grafo\b/gi, "\n\n")
+            .replace(/\s+\bdois pontos\b/gi, ":")
+            .replace(/\s+\bponto e v[íi]rgula\b/gi, ";")
+            .replace(/\s+\binterroga[çc][ãa]o\b/gi, "?")
+            .replace(/\s+\bexclama[çc][ãa]o\b/gi, "!")
+            .replace(/\s+\bv[íi]rgula\b/gi, ",")
+            .replace(/\s+\bponto\b/gi, ".");
+          
+          // Depois, substitui as palavras que estão no início
+          transcript = transcript
+            .replace(/^par[áa]grafo\b/gi, "\n\n")
+            .replace(/^dois pontos\b/gi, ":")
+            .replace(/^ponto e v[íi]rgula\b/gi, ";")
+            .replace(/^interroga[çc][ãa]o\b/gi, "?")
+            .replace(/^exclama[çc][ãa]o\b/gi, "!")
+            .replace(/^v[íi]rgula\b/gi, ",")
+            .replace(/^ponto\b/gi, ".");
+          
+          // Capitaliza letra após pontuação final (. ? !) e após parágrafo
+          transcript = transcript
+            .replace(/([.?!])\s+([a-zà-ÿ])/g, (_m, punct, letter) => `${punct} ${letter.toUpperCase()}`)
+            .replace(/\n\n\s*([a-zà-ÿ])/g, (_m, letter) => `\n\n${letter.toUpperCase()}`);
+          
+          // Comando para enviar mensagem
+          if (/^\s*remeter\s*$/i.test(transcript)) {
+            const currentText = draftRef.current.trim();
+            if (currentText) {
+              submitMessage();
+            }
+            return;
+          }
+          
+          text += transcript;
+        }
       }
       text = text.trim();
       if (!text) return;
       const current = draftRef.current;
-      setDraft(current.trim() ? `${current.trimEnd()} ${text}` : text);
+      
+      // Não adicionar espaço antes de pontuação ou quebras de linha
+      const startsWithPunctuation = /^[\.,;:!?\n]/.test(text);
+      const separator = startsWithPunctuation ? '' : ' ';
+      
+      setDraft(current.trim() ? `${current.trimEnd()}${separator}${text}` : text);
     };
     recognition.onerror = () => { recognitionRef.current = null; setListening(false); };
     recognition.onend = () => { recognitionRef.current = null; setListening(false); };
