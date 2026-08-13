@@ -301,18 +301,33 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           let transcript = result[0].transcript;
           
           // Comandos customizados de pontuação (português)
+          // Primeiro, remove espaços antes das palavras de pontuação
           transcript = transcript
-            .replace(/\bnovo par[áa]grafo\b/gi, "\n\n")
-            .replace(/\bpar[áa]grafo\b/gi, "\n\n")
-            .replace(/\bpula linha\b/gi, "\n")
-            .replace(/\bquebra linha\b/gi, "\n")
-            .replace(/\bnova linha\b/gi, "\n")
-            .replace(/\bdois pontos\b/gi, ":")
-            .replace(/\bponto e v[íi]rgula\b/gi, ";")
-            .replace(/\binterroga[çc][ãa]o\b/gi, "?")
-            .replace(/\bexclama[çc][ãa]o\b/gi, "!")
-            .replace(/\bv[íi]rgula\b/gi, ",")
-            .replace(/\bponto\b/gi, ".");
+            .replace(/\s+\bnovo par[áa]grafo\b/gi, "\n\n")
+            .replace(/\s+\bpar[áa]grafo\b/gi, "\n\n")
+            .replace(/\s+\bpula linha\b/gi, "\n")
+            .replace(/\s+\bquebra linha\b/gi, "\n")
+            .replace(/\s+\bnova linha\b/gi, "\n")
+            .replace(/\s+\bdois pontos\b/gi, ":")
+            .replace(/\s+\bponto e v[íi]rgula\b/gi, ";")
+            .replace(/\s+\binterroga[çc][ãa]o\b/gi, "?")
+            .replace(/\s+\bexclama[çc][ãa]o\b/gi, "!")
+            .replace(/\s+\bv[íi]rgula\b/gi, ",")
+            .replace(/\s+\bponto\b/gi, ".");
+          
+          // Depois, substitui as palavras que estão no início
+          transcript = transcript
+            .replace(/^novo par[áa]grafo\b/gi, "\n\n")
+            .replace(/^par[áa]grafo\b/gi, "\n\n")
+            .replace(/^pula linha\b/gi, "\n")
+            .replace(/^quebra linha\b/gi, "\n")
+            .replace(/^nova linha\b/gi, "\n")
+            .replace(/^dois pontos\b/gi, ":")
+            .replace(/^ponto e v[íi]rgula\b/gi, ";")
+            .replace(/^interroga[çc][ãa]o\b/gi, "?")
+            .replace(/^exclama[çc][ãa]o\b/gi, "!")
+            .replace(/^v[íi]rgula\b/gi, ",")
+            .replace(/^ponto\b/gi, ".");
           
           // Comando para enviar mensagem
           if (/^\s*remeter\s*$/i.test(transcript)) {
@@ -331,8 +346,8 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       if (!text) return;
       const current = draftRef.current;
       
-      // Não adicionar espaço antes de pontuação
-      const startsWithPunctuation = /^[\.,;:!?]/.test(text);
+      // Não adicionar espaço antes de pontuação ou quebras de linha
+      const startsWithPunctuation = /^[\.,;:!?\n]/.test(text);
       const separator = startsWithPunctuation ? '' : ' ';
       
       updateDraft(current.trim() ? `${current.trimEnd()}${separator}${text}` : text);
