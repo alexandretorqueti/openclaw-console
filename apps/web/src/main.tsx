@@ -1,37 +1,28 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BibliotecaThemeProvider } from "@alexandretorqueti/biblioteca-global-ui";
-import { ensureToken, clearToken, validateToken, getStoredToken } from "./auth";
+import { ensureToken } from "./auth";
 import "./styles.css";
 
 // O SPA gerencia o próprio scroll (restauração por sessão + autoscroll): desativa a
 // restauração nativa do browser para ela não sobrescrever a posição após reload (Ctrl+Shift+R).
 if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
 
-// Acesso restrito: o App (e o client da API) só carregam depois de um token válido,
-// para que o client seja construído já com o Authorization correto.
-// Recupera sessão do servidor com o token atual. Se o token for rejeitado (401),
-// limpa e pede um novo — isso evita a "tela azul vazia" no F5 quando o token
-// expirou ou foi revogado no servidor.
-async function bootstrap() {
-  // 1. Se existe token salvo, valida contra o servidor
-  const existing = getStoredToken();
-  console.log("[bootstrap] token do localStorage:", existing ? `${existing.slice(0, 8)}... (${existing.length} chars)` : "nenhum");
-  
-  if (existing) {
-    const ok = await validateToken(existing);
-    console.log("[bootstrap] validação do token:", ok ? "OK" : "FALHOU");
-    if (!ok) {
-      clearToken();
-      // ensureToken vai pedir um novo token (overlay de login)
-      await ensureToken();
-    }
-  } else {
-    // Sem token salvo → pede
-    await ensureToken();
-  }
+// Diagnóstico: qualquer erro fatal fica visível na tela em vez de "tela azul vazia" sem rastro.
+function showFatalError(label: string, error: unknown) {
+  const pre = document.createElement("pre");
+  pre.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;margin:0;background:rgba(120,10,20,.96);color:#fff;padding:14px 16px;z-index:10001;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word";
+  pre.textContent = `[${label}] ${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}`;
+  document.body.appendChild(pre);
+}
+window.addEventListener("error", (event) => showFatalError("error", event.error ?? event.message));
+window.addEventListener("unhandledrejection", (event) => showFatalError("unhandledrejection", event.reason));
 
-  // 2. Carrega e renderiza o App
+// Acesso restrito: o App (e o client da API) só carregam depois de um token válido,
+// para que o client seja construído já com o Authorization correto. Se o token
+// salvo foi revogado/expirou, o ensureToken limpa e exibe a tela de login.
+async function bootstrap() {
+  await ensureToken();
   const { default: App } = await import("./App");
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

@@ -351,9 +351,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     requestAnimationFrame(() => { textareaInputRef.current?.focus(); });
   };
 
-  if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
-
-  const streamMessage = streamText ? { id: "live-stream", role: "assistant" as const, author: agent.name, content: streamText } : undefined;
+  const streamMessage = streamText && agent ? { id: "live-stream", role: "assistant" as const, author: agent.name, content: streamText } : undefined;
   // Quando a última mensagem persistida já contém exatamente o texto em streaming,
   // ela assume a key fixa "live-stream" e a bolha avulsa não é renderizada: o React
   // reutiliza o mesmo DOM na transição streaming → histórico, sem piscada.
@@ -366,10 +364,15 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     return false;
   })();
   const tailReusesStreamKey = !streamMessage || tailMatchesStream;
-  // useMemo: o agrupamento e os elementos da lista só são refeitos quando as
-  // mensagens mudam de fato — os deltas do stream NÃO re-renderizam a lista,
-  // apenas a bolha de streaming (fora do useMemo).
+  // IMPORTANTE (Rules of Hooks): este useMemo precisa rodar em TODOS os renders,
+  // por isso fica ANTES do early return abaixo. Com agentId restaurado do
+  // localStorage, session e agent podem ficar definidos em renders diferentes
+  // (sessions carrega antes de agents); se o useMemo só rodasse com ambos já
+  // presentes, a contagem de hooks mudava entre renders e o React derrubava a
+  // árvore inteira ("Rendered more hooks than during the previous render" →
+  // tela azul vazia no F5).
   const messageItems = useMemo(() => {
+    if (!agent) return [];
     const display = groupDisplayMessages(messages);
     let lastMessageIndex = -1;
     for (let index = display.length - 1; index >= 0; index -= 1) if (display[index].kind === "message") { lastMessageIndex = index; break; }
@@ -380,6 +383,8 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       return <MessageBubble key={key} message={item.message} agent={agent} />;
     });
   }, [messages, agent, tailReusesStreamKey]);
+
+  if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
 
   return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Tooltip title={mobile ? "Abrir conversas" : "Ocultar/mostrar conversas"}><IconButton size="small" className="toggle-chats" onClick={onToggleChats}><ChatBubbleOutlineRounded fontSize="small" /></IconButton></Tooltip><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
     <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box>
@@ -429,7 +434,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
         {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
         <Tooltip title={displayModel(session, agent)}><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
         <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
-        {speechRecognitionSupported() && <Tooltip title={listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}><IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton></Tooltip>}
+        <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}><span><IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton></span></Tooltip>
         <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
       </Box></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
@@ -527,21 +532,9 @@ function ConsoleApp() {
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) processingBySessionRef.current.set(session.key, session.hasActiveRun); }); refreshProcessingAgents(); }, [refreshProcessingAgents]);
-  const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); 
-    // Valida o agentId salvo: se não existe mais na lista, usa o primeiro disponível
-    setAgentId((current) => {
-      console.log("[loadRoot] agentId atual do state:", current, "agentes disponíveis:", nextAgents.map(a => a.id));
-      const savedValid = current && nextAgents.some((a) => a.id === current);
-      const result = savedValid ? current : nextAgents[0]?.id ?? "";
-      console.log("[loadRoot] agentId final:", result);
-      return result;
-    });
-    void loadAgentActivity(nextAgents); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity]);
+  const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); setAgentId((current) => current && nextAgents.some((a) => a.id === current) ? current : nextAgents[0]?.id ?? ""); void loadAgentActivity(nextAgents); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity]);
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
-  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => {
-    console.log("[loadSessions] sessionKey atual do state:", current, "primeira sessão:", rows[0]?.key);
-    return rows.some((s) => s.key === current) ? current : rows[0]?.key ?? "";
-  }); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
+  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => rows.some((s) => s.key === current) ? current : rows[0]?.key ?? ""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
   const refreshSessionMetadata = useCallback(async (key: string, id: string) => { try { const page = await api.sessions(id, 0, 200); const fresh = page.sessions.find((session) => session.key === key); if (!fresh) return; processingBySessionRef.current.set(key, fresh.hasActiveRun); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key ? { ...session, ...fresh } : session)); } catch { /* A próxima atualização SSE ou sondagem reconciliará os metadados. */ } }, [refreshProcessingAgents]);
   const loadHistory = useCallback(async (key: string, id: string) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages([...history.messages, ...unresolved]); setSessionId(history.sessionId); setStreamText(""); terminalTextRef.current = undefined; /* a resposta persistida assume a key fixa "live-stream" no render, reutilizando a mesma bolha do streaming sem remontar */ } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setHistoryLoading(false); } }, []);
   useEffect(() => { void loadRoot(); }, [loadRoot]);
@@ -555,27 +548,10 @@ function ConsoleApp() {
     if (!firstLoad) {
       setSessions([]); setSessionKey(""); setSessionsHasMore(false); setSessionsNextOffset(0); setMessages([]);
     }
-    if (agentId) {
-      console.log("[useEffect agentId] chamando loadSessions para:", agentId);
-      void loadSessions(agentId);
-    }
+    if (agentId) void loadSessions(agentId);
   }, [agentId, loadSessions]);
   useEffect(() => { initialRestoreRef.current = false; }, []);
-  useEffect(() => { 
-    console.log("[useEffect sessionKey] sessionKey:", sessionKey, "selectedSession:", !!selectedSession);
-    setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); 
-    setSessionId(undefined); 
-    setStreamText(""); 
-    setRunId(undefined); 
-    const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); 
-    setProcessing(active); 
-    if (sessionKey && selectedSession) {
-      console.log("[useEffect sessionKey] chamando loadHistory para:", sessionKey);
-      void loadHistory(sessionKey, sessionAgentId(selectedSession));
-    } else {
-      console.log("[useEffect sessionKey] NÃO chamando loadHistory (sessionKey ou selectedSession inválido)");
-    }
-  }, [sessionKey, selectedSession, loadHistory]);
+  useEffect(() => { setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
   useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) return; if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
