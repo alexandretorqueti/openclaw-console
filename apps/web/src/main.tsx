@@ -16,8 +16,11 @@ if ("scrollRestoration" in window.history) window.history.scrollRestoration = "m
 async function bootstrap() {
   // 1. Se existe token salvo, valida contra o servidor
   const existing = getStoredToken();
+  console.log("[bootstrap] token do localStorage:", existing ? `${existing.slice(0, 8)}... (${existing.length} chars)` : "nenhum");
+  
   if (existing) {
     const ok = await validateToken(existing);
+    console.log("[bootstrap] validação do token:", ok ? "OK" : "FALHOU");
     if (!ok) {
       clearToken();
       // ensureToken vai pedir um novo token (overlay de login)

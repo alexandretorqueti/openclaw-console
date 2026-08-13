@@ -12,7 +12,9 @@ export type ApiModel = ModelChoice;
 export type ApiAgentContextFile = AgentContextFile;
 export type ChatEvent = ContractChatEvent;
 
-const client = new OpenClawConsoleClient({ baseUrl: API_BASE_URL, authToken: getStoredToken() });
+const storedToken = getStoredToken();
+console.log("[api] criando client com token:", storedToken ? `${storedToken.slice(0, 8)}... (${storedToken.length} chars)` : "nenhum");
+const client = new OpenClawConsoleClient({ baseUrl: API_BASE_URL, authToken: storedToken });
 const messages = (rows: ChatMessage[]): ApiMessage[] => rows.map(({ createdAt, ...message }) => ({ ...message, timestamp: createdAt }));
 
 export const api = {
