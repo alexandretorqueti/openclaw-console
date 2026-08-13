@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
-  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MoreVertRounded, PsychologyRounded,
+  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, PsychologyRounded,
   RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
 } from "@mui/icons-material";
@@ -213,6 +213,38 @@ type SendShortcut = "enter" | "ctrl-enter";
 // Região mínima considerada "fim da lista": só autoscrolla quando o scroll
 // já estiver colado no final (menos de ~0.5cm). Se o usuário subir 1cm, para.
 const NEAR_BOTTOM_PX = 32;
+// ------------------------- Ditado por voz (Web Speech API) -------------------------
+// Usa o reconhecimento de fala nativo do navegador (Chrome/Edge/Safari) para
+// transcrever o microfone direto no rascunho do composer — sem backend extra.
+type SpeechRecognitionResultLike = { isFinal: boolean; 0: { transcript: string } };
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: { length: number; [index: number]: SpeechRecognitionResultLike };
+};
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+function speechRecognitionCtor(): (new () => SpeechRecognitionLike) | undefined {
+  if (typeof window === "undefined") return undefined;
+  const holder = window as Window & {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return holder.SpeechRecognition ?? holder.webkitSpeechRecognition;
+}
+
+function speechRecognitionSupported(): boolean {
+  return Boolean(speechRecognitionCtor());
+}
+
 function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
   models: ApiModel[]; initialDraft?: string; onDraftChange: (text: string) => void; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
@@ -246,6 +278,43 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // Ref espelho de "ocupado", para o debounce ler o valor vivo no disparo do timer.
   const busyRef = useRef(busy);
   busyRef.current = busy;
+
+  // ---- Ditado por voz: o botão de microfone transcreve a fala e anexa o texto
+  // ao rascunho (não envia sozinho). O estado espelho via ref permite que os
+  // callbacks assíncronos do reconhecimento leiam o rascunho vivo. ----
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+  const toggleListening = () => {
+    if (recognitionRef.current) { recognitionRef.current.stop(); return; }
+    const Ctor = speechRecognitionCtor();
+    if (!Ctor) return;
+    const recognition = new Ctor();
+    recognition.lang = "pt-BR";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      let text = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal) text += result[0].transcript;
+      }
+      text = text.trim();
+      if (!text) return;
+      const current = draftRef.current;
+      updateDraft(current.trim() ? `${current.trimEnd()} ${text}` : text);
+    };
+    recognition.onerror = () => { recognitionRef.current = null; setListening(false); };
+    recognition.onend = () => { recognitionRef.current = null; setListening(false); };
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+    }
+  };
 
   const handleScroll = useCallback((list: HTMLDivElement) => {
     const distance = list.scrollHeight - list.clientHeight - list.scrollTop;
@@ -360,6 +429,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
         {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
         <Tooltip title={displayModel(session, agent)}><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
         <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
+        {speechRecognitionSupported() && <Tooltip title={listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}><IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton></Tooltip>}
         <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
       </Box></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
