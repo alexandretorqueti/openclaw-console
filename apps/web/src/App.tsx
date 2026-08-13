@@ -12,7 +12,7 @@ import {
   LinearProgress, Menu, MenuItem, Paper, Select, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiSession, type GatewayStatus } from "./api";
-import { AgentGroupsManagement } from "./AgentGroups";
+import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 
 const colors = ["#7c6df2", "#24b47e", "#f0a23a", "#4c9ffe", "#e06c9f", "#27b4c8"];
 type ConsoleView = "conversations" | "agents" | "groups";
@@ -450,6 +450,7 @@ function ConsoleApp() {
   const isNarrow = viewportWidth <= 900;
   const gridColumns = useMemo(() => {
     if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
+    if (view === "groups") return `${viewportWidth <= 720 ? 58 : 68}px minmax(240px, 300px) minmax(0, 1fr)`;
     if (isNarrow) return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
     return `${viewportWidth <= 720 ? 58 : 68}px ${chatsColumnVisible ? "minmax(240px, 300px)" : "minmax(0, 0px)"} minmax(0, 1fr)`;
   }, [view, viewportWidth, chatsColumnVisible, isNarrow]);
@@ -459,12 +460,18 @@ function ConsoleApp() {
   const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); 
     // Valida o agentId salvo: se não existe mais na lista, usa o primeiro disponível
     setAgentId((current) => {
+      console.log("[loadRoot] agentId atual do state:", current, "agentes disponíveis:", nextAgents.map(a => a.id));
       const savedValid = current && nextAgents.some((a) => a.id === current);
-      return savedValid ? current : nextAgents[0]?.id ?? "";
+      const result = savedValid ? current : nextAgents[0]?.id ?? "";
+      console.log("[loadRoot] agentId final:", result);
+      return result;
     });
     void loadAgentActivity(nextAgents); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity]);
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
-  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => rows.some((s) => s.key === current) ? current : rows[0]?.key ?? ""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
+  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => {
+    console.log("[loadSessions] sessionKey atual do state:", current, "primeira sessão:", rows[0]?.key);
+    return rows.some((s) => s.key === current) ? current : rows[0]?.key ?? "";
+  }); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
   const refreshSessionMetadata = useCallback(async (key: string, id: string) => { try { const page = await api.sessions(id, 0, 200); const fresh = page.sessions.find((session) => session.key === key); if (!fresh) return; processingBySessionRef.current.set(key, fresh.hasActiveRun); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key ? { ...session, ...fresh } : session)); } catch { /* A próxima atualização SSE ou sondagem reconciliará os metadados. */ } }, [refreshProcessingAgents]);
   const loadHistory = useCallback(async (key: string, id: string) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages([...history.messages, ...unresolved]); setSessionId(history.sessionId); setStreamText(""); terminalTextRef.current = undefined; /* a resposta persistida assume a key fixa "live-stream" no render, reutilizando a mesma bolha do streaming sem remontar */ } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setHistoryLoading(false); } }, []);
   useEffect(() => { void loadRoot(); }, [loadRoot]);
@@ -478,10 +485,27 @@ function ConsoleApp() {
     if (!firstLoad) {
       setSessions([]); setSessionKey(""); setSessionsHasMore(false); setSessionsNextOffset(0); setMessages([]);
     }
-    if (agentId) void loadSessions(agentId);
+    if (agentId) {
+      console.log("[useEffect agentId] chamando loadSessions para:", agentId);
+      void loadSessions(agentId);
+    }
   }, [agentId, loadSessions]);
   useEffect(() => { initialRestoreRef.current = false; }, []);
-  useEffect(() => { setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSession) void loadHistory(sessionKey, sessionAgentId(selectedSession)); }, [sessionKey, selectedSession, loadHistory]);
+  useEffect(() => { 
+    console.log("[useEffect sessionKey] sessionKey:", sessionKey, "selectedSession:", !!selectedSession);
+    setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); 
+    setSessionId(undefined); 
+    setStreamText(""); 
+    setRunId(undefined); 
+    const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); 
+    setProcessing(active); 
+    if (sessionKey && selectedSession) {
+      console.log("[useEffect sessionKey] chamando loadHistory para:", sessionKey);
+      void loadHistory(sessionKey, sessionAgentId(selectedSession));
+    } else {
+      console.log("[useEffect sessionKey] NÃO chamando loadHistory (sessionKey ou selectedSession inválido)");
+    }
+  }, [sessionKey, selectedSession, loadHistory]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
   useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) return; if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
@@ -497,9 +521,61 @@ function ConsoleApp() {
   const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const fork = async () => { if (!selectedAgent || !selectedSession) return; const label = window.prompt("Nome do fork:", `Fork · ${selectedSession.label ?? selectedSession.title ?? "sessão"}`)?.trim(); if (!label) return; try { const result = await api.forkSession({ parentSessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
 
+  const groupState = useAgentGroups(agents);
+
   return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
     {view === "agents" ? <AgentManagement agents={agents} models={models} status={status} loading={loading} onRefresh={loadRoot} onError={setError} />
-    : view === "groups" ? <AgentGroupsManagement agents={agents} />
+    : view === "groups" ? <>
+      <GroupsPanel
+        groups={groupState.groups}
+        selectedGroupId={groupState.selectedGroupId}
+        onSelect={(group) => groupState.setSelectedGroupId(group.id)}
+        onCreate={() => {
+          groupState.setEditingGroup(null);
+          groupState.setFormDialogOpen(true);
+        }}
+        onRename={(group) => {
+          groupState.setEditingGroup(group);
+          groupState.setFormDialogOpen(true);
+        }}
+        onDelete={groupState.handleDeleteGroup}
+      />
+      {groupState.selectedGroup ? (
+        <GroupChatPane
+          group={groupState.selectedGroup}
+          agents={agents}
+          messages={groupState.messages}
+          onSend={groupState.handleSendMessage}
+          onManageAgents={() => groupState.setManageDialogOpen(true)}
+        />
+      ) : (
+        <Box className="agent-empty">
+          <Box className="agent-empty-card">
+            <GroupRounded sx={{ fontSize: 40 }} />
+            <Typography variant="h6">Selecione um grupo</Typography>
+            <Typography variant="body2" color="text.secondary" textAlign="center">
+              Escolha um grupo na lista ou crie um novo para começar a conversar com múltiplos agentes.
+            </Typography>
+          </Box>
+        </Box>
+      )}
+      <GroupFormDialog
+        open={groupState.formDialogOpen}
+        group={groupState.editingGroup}
+        onClose={() => {
+          groupState.setFormDialogOpen(false);
+          groupState.setEditingGroup(null);
+        }}
+        onSave={groupState.handleSaveGroup}
+      />
+      <ManageAgentsDialog
+        open={groupState.manageDialogOpen}
+        group={groupState.selectedGroup}
+        agents={agents}
+        onClose={() => groupState.setManageDialogOpen(false)}
+        onSave={groupState.handleSaveAgents}
+      />
+    </>
     : <>
       {!connected ? <GatewayOfflinePane status={status} /> : <>
         {isNarrow ? (
