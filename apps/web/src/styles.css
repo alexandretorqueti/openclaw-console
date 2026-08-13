@@ -205,8 +205,8 @@ button, input, textarea { font: inherit; }
 .send-button { width: 36px; height: 36px; color: white !important; background: linear-gradient(145deg, #8272f6, #5c4bd8) !important; }
 .send-button.Mui-disabled { opacity: .35; }
 /* Ditado por voz: microfone no composer; pulsante enquanto escuta */
-.composer-controls .mic-button { width: 100%; height: 36px; border-radius: 10px !important; flex: 0 0 auto; color: #8b93ad !important; background: rgba(120, 130, 163, .07) !important; }
-.composer-controls .mic-button:hover { color: #a99fff !important; background: rgba(124, 109, 242, .14) !important; }
+.composer-controls .mic-button { width: 100%; height: 36px; border-radius: 10px !important; flex: 0 0 auto; color: #7c6df2 !important; background: rgba(124, 109, 242, .14) !important; border: 1px solid rgba(124, 109, 242, .45) !important; }
+.composer-controls .mic-button:hover { color: #fff !important; background: rgba(124, 109, 242, .85) !important; }
 .composer-controls .mic-button.listening { color: #fff !important; background: linear-gradient(145deg, #e05252, #c23a3a) !important; animation: mic-pulse 1.8s ease-out infinite; }
 @keyframes mic-pulse {
   0% { box-shadow: 0 0 0 0 rgba(224, 82, 82, .45); }
