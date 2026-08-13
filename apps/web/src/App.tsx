@@ -311,6 +311,16 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
             .replace(/\bvírgula\b/gi, ",")
             .replace(/\bponto\b/gi, ".");
           
+          // Comando para enviar mensagem (palavra em inglês para evitar conflitos)
+          if (/^\s*send\s*$/i.test(transcript)) {
+            // Se o transcript for apenas "send", envia a mensagem
+            const currentText = draftRef.current.trim();
+            if (currentText) {
+              void submitDraft();
+            }
+            return; // Não adiciona "send" ao texto
+          }
+          
           text += transcript;
         }
       }
