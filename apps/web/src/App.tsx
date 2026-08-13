@@ -302,13 +302,16 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           
           // Comandos customizados de pontuação (português)
           transcript = transcript
-            .replace(/\bnovo parágrafo\b/gi, "\n\n")
+            .replace(/\bnovo par[áa]grafo\b/gi, "\n\n")
+            .replace(/\bpar[áa]grafo\b/gi, "\n\n")
+            .replace(/\bpula linha\b/gi, "\n")
+            .replace(/\bquebra linha\b/gi, "\n")
             .replace(/\bnova linha\b/gi, "\n")
             .replace(/\bdois pontos\b/gi, ":")
-            .replace(/\bponto e vírgula\b/gi, ";")
-            .replace(/\binterrogação\b/gi, "?")
-            .replace(/\bexclamação\b/gi, "!")
-            .replace(/\bvírgula\b/gi, ",")
+            .replace(/\bponto e v[íi]rgula\b/gi, ";")
+            .replace(/\binterroga[çc][ãa]o\b/gi, "?")
+            .replace(/\bexclama[çc][ãa]o\b/gi, "!")
+            .replace(/\bv[íi]rgula\b/gi, ",")
             .replace(/\bponto\b/gi, ".");
           
           // Comando para enviar mensagem
@@ -327,7 +330,12 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       text = text.trim();
       if (!text) return;
       const current = draftRef.current;
-      updateDraft(current.trim() ? `${current.trimEnd()} ${text}` : text);
+      
+      // Não adicionar espaço antes de pontuação
+      const startsWithPunctuation = /^[\.,;:!?]/.test(text);
+      const separator = startsWithPunctuation ? '' : ' ';
+      
+      updateDraft(current.trim() ? `${current.trimEnd()}${separator}${text}` : text);
     };
     recognition.onerror = () => { recognitionRef.current = null; setListening(false); };
     recognition.onend = () => { recognitionRef.current = null; setListening(false); };
