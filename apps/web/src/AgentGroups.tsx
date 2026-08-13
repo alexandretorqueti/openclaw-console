@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent
 import {
   AddRounded, AutoAwesomeRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
   ContentCopyRounded, DeleteOutlineRounded, EditRounded, GroupRounded,
-  MoreVertRounded, PersonRemoveRounded, SendRounded, SmartToyOutlined,
+  MicRounded, MoreVertRounded, PersonRemoveRounded, SendRounded, SmartToyOutlined,
+  StopCircleRounded,
 } from "@mui/icons-material";
 import {
   Alert, Avatar, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions,
@@ -11,6 +12,38 @@ import {
 } from "@mui/material";
 import type { ApiAgent, ApiMessage } from "./api";
 import { api } from "./api";
+
+type SendShortcut = "enter" | "ctrl-enter";
+
+// ------------------------- Ditado por voz (Web Speech API) -------------------------
+type SpeechRecognitionResultLike = { isFinal: boolean; 0: { transcript: string } };
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: { length: number; [index: number]: SpeechRecognitionResultLike };
+};
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+function speechRecognitionCtor(): (new () => SpeechRecognitionLike) | undefined {
+  if (typeof window === "undefined") return undefined;
+  const holder = window as Window & {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return holder.SpeechRecognition ?? holder.webkitSpeechRecognition;
+}
+
+function speechRecognitionSupported(): boolean {
+  return Boolean(speechRecognitionCtor());
+}
 
 const colors = ["#7c6df2", "#24b47e", "#f0a23a", "#4c9ffe", "#e06c9f", "#27b4c8"];
 
@@ -91,14 +124,67 @@ function saveGroupMessages(groupId: string, messages: GroupMessage[]) {
 }
 
 // System prompt for agents in a group
-const GROUP_AGENT_SYSTEM_PROMPT = `Você está em um grupo de agentes. Você verá todas as mensagens do grupo.
+const GROUP_AGENT_SYSTEM_PROMPT = `Você está em um grupo com outros agentes. Abaixo está a conversa do grupo (mensagens do usuário e dos outros agentes, na ordem em que ocorreram).
 Responda APENAS se:
-- A mensagem é diretamente para você (@seu_nome)
+- A mensagem é diretamente para você
 - Você tem conhecimento/expertise relevante que falta aos outros
 - Você precisa corrigir algo importante
-Caso contrário, fique em silêncio (responda NO_REPLY).
+Caso contrário, responda exatamente NO_REPLY (e nada mais) para ficar em silêncio.
+Quando responder, seja conciso e direto ao ponto — não precisa se identificar, o chat já mostra seu nome.`;
 
-Quando responder, seja conciso e direto ao ponto. Identifique-se no início da resposta.`;
+const SYNC_STORAGE_PREFIX = "openclaw-group-sync-";
+
+function loadGroupSync(groupId: string): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(`${SYNC_STORAGE_PREFIX}${groupId}`);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+function saveGroupSync(groupId: string, sync: Record<string, number>) {
+  localStorage.setItem(`${SYNC_STORAGE_PREFIX}${groupId}`, JSON.stringify(sync));
+}
+
+function isNoiseMessage(content: string) {
+  return content.startsWith("⏳") || content.startsWith("❌");
+}
+
+type AgentReply =
+  | { kind: "reply"; content: string; timestamp?: number }
+  | { kind: "silent" }
+  | { kind: "timeout" };
+
+// Espera o run do agente terminar e devolve a última mensagem assistant.
+// "silent" = run terminou sem resposta visível (ex.: NO_REPLY suprimido pelo Gateway).
+async function waitForAgentResponse(
+  sessionKey: string,
+  agentId: string,
+  maxAttempts = 60,
+): Promise<AgentReply> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const history = await api.history(sessionKey, agentId);
+      const last = history.messages[history.messages.length - 1];
+      if (last && last.role === "assistant" && last.content) {
+        return { kind: "reply", content: last.content, timestamp: last.timestamp ?? Date.now() };
+      }
+      // A partir da 2ª tentativa, verifica se o run já terminou sem resposta
+      // visível (ex.: o agente respondeu NO_REPLY e o Gateway suprimiu).
+      if (attempt >= 1) {
+        const page = await api.sessions(agentId, 0, 100);
+        const session = page.sessions.find((s) => s.key === sessionKey);
+        if (session && !session.hasActiveRun) return { kind: "silent" };
+      }
+    } catch (error) {
+      console.error(`Error polling for agent ${agentId}:`, error);
+    }
+  }
+  return { kind: "timeout" };
+}
 
 // Groups Panel (left side)
 export function GroupsPanel({
@@ -272,41 +358,119 @@ export function GroupChatPane({
   messages,
   onSend,
   onManageAgents,
+  sendingToAgents,
 }: {
   group: AgentGroup;
   agents: ApiAgent[];
   messages: GroupMessage[];
   onSend: (content: string) => void;
   onManageAgents: () => void;
+  sendingToAgents: Set<string>;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendShortcut, setSendShortcut] = useState<SendShortcut>(
+    () => (localStorage.getItem("openclaw-console-send-shortcut") === "enter" ? "enter" : "ctrl-enter")
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const enterDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const clearEnterDebounce = useCallback(() => {
+    if (enterDebounceRef.current) {
+      clearTimeout(enterDebounceRef.current);
+      enterDebounceRef.current = undefined;
+    }
+  }, []);
+
+  useEffect(() => clearEnterDebounce, [clearEnterDebounce]);
 
   const groupAgents = useMemo(
     () => agents.filter((agent) => group.agentIds.includes(agent.id)),
     [agents, group.agentIds],
   );
 
+  // ---- Ditado por voz ----
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+
+  const toggleListening = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+    const Ctor = speechRecognitionCtor();
+    if (!Ctor) return;
+    const recognition = new Ctor();
+    recognition.lang = "pt-BR";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      let text = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal) text += result[0].transcript;
+      }
+      text = text.trim();
+      if (!text) return;
+      const current = draftRef.current;
+      setDraft(current.trim() ? `${current.trimEnd()} ${text}` : text);
+    };
+    recognition.onerror = () => { recognitionRef.current = null; setListening(false); };
+    recognition.onend = () => { recognitionRef.current = null; setListening(false); };
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+    }
+  };
+
   const submitMessage = useCallback(() => {
-    const content = draft.trim();
+    clearEnterDebounce();
+    const content = draftRef.current.trim();
     if (!content || sending) return;
     setSending(true);
     onSend(content);
     setDraft("");
     setTimeout(() => setSending(false), 100);
-  }, [draft, sending, onSend]);
+  }, [sending, onSend, clearEnterDebounce]);
 
   const handleComposerKey = useCallback(
     (event: React.KeyboardEvent) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key !== "Enter") {
+        clearEnterDebounce();
+        return;
+      }
+      const modifier = event.ctrlKey || event.metaKey;
+      const composing = event.nativeEvent.isComposing;
+      const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
+
+      if (isSendCombination) {
+        clearEnterDebounce();
+        if (sending || composing) return;
         event.preventDefault();
         submitMessage();
+        return;
       }
+
+      if (sending) {
+        clearEnterDebounce();
+        return;
+      }
+      clearEnterDebounce();
+      enterDebounceRef.current = setTimeout(() => {
+        enterDebounceRef.current = undefined;
+        submitMessage();
+      }, 1000);
     },
-    [submitMessage],
+    [sendShortcut, sending, submitMessage, clearEnterDebounce],
   );
 
   useEffect(() => {
@@ -314,6 +478,12 @@ export function GroupChatPane({
     if (!element) return;
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   }, [messages.length]);
+
+  const isProcessing = sendingToAgents.size > 0;
+  const processingAgents = useMemo(
+    () => groupAgents.filter((a) => sendingToAgents.has(a.id)),
+    [groupAgents, sendingToAgents],
+  );
 
   return (
     <Box className="chat-pane">
@@ -328,8 +498,7 @@ export function GroupChatPane({
                 {group.name}
               </Typography>
               <Typography variant="caption" color="text.secondary" noWrap>
-                {groupAgents.length} agente{groupAgents.length !== 1 ? "s" : ""} •{" "}
-                {groupAgents.map((a) => a.emoji ?? "🤖").join(" ")}
+                {groupAgents.length} agente{groupAgents.length !== 1 ? "s" : ""}
               </Typography>
             </Box>
           </Stack>
@@ -340,6 +509,40 @@ export function GroupChatPane({
               <SmartToyOutlined fontSize="small" />
             </IconButton>
           </Tooltip>
+        </Stack>
+      </Box>
+
+      {/* Lista de agentes do grupo */}
+      <Box sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {groupAgents.map((agent) => {
+            const isAgentProcessing = sendingToAgents.has(agent.id);
+            return (
+              <Chip
+                key={agent.id}
+                avatar={
+                  <Avatar sx={{ bgcolor: `${agentColor(agent)}25`, border: `1px solid ${agentColor(agent)}55` }}>
+                    {agent.emoji ?? "🤖"}
+                  </Avatar>
+                }
+                label={agent.name}
+                size="small"
+                sx={{
+                  border: isAgentProcessing ? `1px solid ${agentColor(agent)}` : undefined,
+                  animation: isAgentProcessing ? "pulse 1.5s ease-in-out infinite" : undefined,
+                  "@keyframes pulse": {
+                    "0%, 100%": { opacity: 1 },
+                    "50%": { opacity: 0.6 },
+                  },
+                }}
+              />
+            );
+          })}
+          {groupAgents.length === 0 && (
+            <Typography variant="caption" color="text.secondary">
+              Nenhum agente no grupo
+            </Typography>
+          )}
         </Stack>
       </Box>
 
@@ -376,31 +579,70 @@ export function GroupChatPane({
             multiline
             maxRows={5}
             fullWidth
-            placeholder={groupAgents.length === 0 ? "Adicione agentes ao grupo para começar..." : "Mensagem para o grupo..."}
+            placeholder={
+              groupAgents.length === 0
+                ? "Adicione agentes ao grupo para começar..."
+                : isProcessing
+                  ? `Aguardando ${processingAgents.map((a) => a.name).join(", ")} terminar...`
+                  : "Mensagem para o grupo..."
+            }
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             minRows={2}
             variant="standard"
             InputProps={{ disableUnderline: true }}
-            disabled={sending || groupAgents.length === 0}
+            disabled={isProcessing || groupAgents.length === 0}
             autoFocus
             onKeyDown={handleComposerKey}
           />
           <Box className="composer-controls">
-            {sending && (
+            <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
+              <span>
+                <IconButton
+                  type="button"
+                  className={listening ? "mic-button listening" : "mic-button"}
+                  onClick={toggleListening}
+                  disabled={!speechRecognitionSupported() || groupAgents.length === 0}
+                  aria-label={listening ? "Parar ditado" : "Ditar por voz"}
+                >
+                  {listening ? <StopCircleRounded /> : <MicRounded />}
+                </IconButton>
+              </span>
+            </Tooltip>
+            {isProcessing && (
               <Box className="composer-processing" role="status" aria-live="polite">
                 <CircularProgress size={13} thickness={5} />
-                <Typography variant="caption">Enviando</Typography>
+                <Typography variant="caption">
+                  {processingAgents.map((a) => a.emoji ?? "🤖").join("")} Processando
+                </Typography>
               </Box>
             )}
-            <IconButton
-              type="submit"
-              className="send-button"
-              disabled={!draft.trim() || sending || groupAgents.length === 0}
-              aria-label="Enviar mensagem"
+            <Select
+              className="send-shortcut"
+              size="small"
+              value={sendShortcut}
+              onChange={(event) => {
+                const value = event.target.value as SendShortcut;
+                setSendShortcut(value);
+                localStorage.setItem("openclaw-console-send-shortcut", value);
+              }}
+              aria-label="Atalho para enviar mensagem"
             >
-              {sending ? <CircularProgress size={18} /> : <SendRounded />}
-            </IconButton>
+              <MenuItem value="enter">Enter envia</MenuItem>
+              <MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem>
+            </Select>
+            <Tooltip title={isProcessing ? `Aguardando ${processingAgents.map((a) => a.name).join(", ")} terminar` : ""}>
+              <span>
+                <IconButton
+                  type="submit"
+                  className="send-button"
+                  disabled={!draft.trim() || isProcessing || groupAgents.length === 0}
+                  aria-label="Enviar mensagem"
+                >
+                  {isProcessing ? <CircularProgress size={18} /> : <SendRounded />}
+                </IconButton>
+              </span>
+            </Tooltip>
           </Box>
         </Paper>
         {groupAgents.length === 0 && (
@@ -644,6 +886,7 @@ export function useAgentGroups(agents: ApiAgent[]) {
       setGroups(updated);
       saveGroups(updated);
       localStorage.removeItem(`${MESSAGES_STORAGE_PREFIX}${group.id}`);
+      localStorage.removeItem(`${SYNC_STORAGE_PREFIX}${group.id}`);
       if (selectedGroupId === group.id) {
         setSelectedGroupId(null);
       }
@@ -664,73 +907,153 @@ export function useAgentGroups(agents: ApiAgent[]) {
     [selectedGroup, groups],
   );
 
-  // Send message to all agents in group
+  // Send message to all agents in group — revezamento sequencial com transcrição
+  // compartilhada: cada agente recebe a conversa acumulada (incluindo as respostas
+  // dos agentes que falaram antes na mesma rodada) e o próximo só é acionado
+  // depois que o anterior responde. Assim todos "veem" a conversa do grupo.
   const handleSendMessage = useCallback(
     async (content: string) => {
       if (!selectedGroup || selectedGroup.agentIds.length === 0) return;
+      const groupId = selectedGroup.id;
+      const groupName = selectedGroup.name;
+
+      // Atualização funcional: cada alteração parte do estado VIVO e é persistida.
+      const updateMessages = (updater: (current: GroupMessage[]) => GroupMessage[]) => {
+        setMessages((current) => {
+          const next = updater(current);
+          saveGroupMessages(groupId, next);
+          return next;
+        });
+      };
+
+      const markAgentDone = (agentId: string) => {
+        setSendingToAgents((current) => {
+          if (!current.has(agentId)) return current;
+          const next = new Set(current);
+          next.delete(agentId);
+          return next;
+        });
+      };
 
       // Add user message
       const userMessage: GroupMessage = {
         id: clientId(),
-        groupId: selectedGroup.id,
+        groupId,
         senderType: "user",
         senderId: "user",
         senderName: "Você",
         content,
         timestamp: Date.now(),
       };
+      updateMessages((current) => [...current, userMessage]);
 
-      const updatedMessages = [...messages, userMessage];
-      setMessages(updatedMessages);
-      saveGroupMessages(selectedGroup.id, updatedMessages);
-
-      // Send to each agent
       const groupAgents = agents.filter((a) => selectedGroup.agentIds.includes(a.id));
       setSendingToAgents(new Set(selectedGroup.agentIds));
 
+      // Pontos de sincronização: quantas mensagens do grupo cada agente já viu
+      // na própria sessão do Gateway (evita reenviar histórico a cada rodada).
+      const sync = loadGroupSync(groupId);
+
+      // Espelho local do array persistido — sempre o mesmo comprimento/ordem.
+      let liveMessages: GroupMessage[] = [...messages, userMessage];
+
       for (const agent of groupAgents) {
+        const sessionKey = `agent:${agent.id}:group:${groupId}`;
+        const placeholderId = clientId();
+
+        // Delta: o que este agente ainda não viu, excluindo as próprias falas
+        // (já estão na sessão dele como respostas assistant) e mensagens de ruído.
+        const syncFrom = sync[agent.id] ?? 0;
+        const delta = liveMessages
+          .slice(syncFrom)
+          .filter((m) => m.senderId !== agent.id && !isNoiseMessage(m.content));
+
+        if (delta.length === 0) {
+          sync[agent.id] = liveMessages.length;
+          saveGroupSync(groupId, sync);
+          markAgentDone(agent.id);
+          continue;
+        }
+
+        // Placeholder visível enquanto este agente processa
+        const placeholder: GroupMessage = {
+          id: placeholderId,
+          groupId,
+          senderType: "agent",
+          senderId: agent.id,
+          senderName: agent.name,
+          content: "⏳ Pensando...",
+          timestamp: Date.now(),
+        };
+        updateMessages((current) => [...current, placeholder]);
+
         try {
-          // Create a session for this agent if needed, or use existing
-          // For now, we'll send via the API and collect responses
-          const response = await api.send({
-            sessionKey: `agent:${agent.id}:group:${selectedGroup.id}`,
+          const transcript = delta
+            .map((m) => `${m.senderType === "user" ? "Usuário" : m.senderName}: ${m.content}`)
+            .join("\n\n");
+
+          await api.send({
+            sessionKey,
             agentId: agent.id,
-            message: `[Grupo: ${selectedGroup.name}]\n\n${content}\n\n${GROUP_AGENT_SYSTEM_PROMPT}`,
+            message: `[Grupo: ${groupName}]\n\n${transcript}\n\n${GROUP_AGENT_SYSTEM_PROMPT}`,
           });
 
-          // Poll for response (simplified - in production, use SSE/events)
-          // For now, we'll add a placeholder and update when response arrives
-          const agentMessage: GroupMessage = {
-            id: clientId(),
-            groupId: selectedGroup.id,
-            senderType: "agent",
-            senderId: agent.id,
-            senderName: agent.name,
-            content: `⏳ Processando... (runId: ${response.runId})`,
-            timestamp: Date.now(),
-          };
+          const response = await waitForAgentResponse(sessionKey, agent.id);
 
-          const withAgentMessage = [...updatedMessages, agentMessage];
-          setMessages(withAgentMessage);
-          saveGroupMessages(selectedGroup.id, withAgentMessage);
+          if (
+            response.kind === "silent" ||
+            (response.kind === "reply" && /^\s*NO_REPLY\s*$/i.test(response.content))
+          ) {
+            // Agente escolheu ficar em silêncio — remove a bolha
+            updateMessages((current) => current.filter((m) => m.id !== placeholderId));
+          } else if (response.kind === "reply") {
+            const agentMessage: GroupMessage = {
+              id: placeholderId,
+              groupId,
+              senderType: "agent",
+              senderId: agent.id,
+              senderName: agent.name,
+              content: response.content,
+              timestamp: response.timestamp ?? Date.now(),
+            };
+            updateMessages((current) =>
+              current.map((m) => (m.id === placeholderId ? agentMessage : m)),
+            );
+            liveMessages = [...liveMessages, agentMessage];
+          } else {
+            // Timeout
+            const timeoutMessage: GroupMessage = {
+              id: placeholderId,
+              groupId,
+              senderType: "agent",
+              senderId: agent.id,
+              senderName: agent.name,
+              content: "⏳ Tempo esgotado aguardando resposta...",
+              timestamp: Date.now(),
+            };
+            updateMessages((current) =>
+              current.map((m) => (m.id === placeholderId ? timeoutMessage : m)),
+            );
+            liveMessages = [...liveMessages, timeoutMessage];
+          }
         } catch (error) {
           console.error(`Error sending to agent ${agent.id}:`, error);
-          const errorMessage: GroupMessage = {
-            id: clientId(),
-            groupId: selectedGroup.id,
-            senderType: "agent",
-            senderId: agent.id,
-            senderName: agent.name,
-            content: `❌ Erro ao enviar mensagem: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-            timestamp: Date.now(),
-          };
-          const withError = [...updatedMessages, errorMessage];
-          setMessages(withError);
-          saveGroupMessages(selectedGroup.id, withError);
+          updateMessages((current) =>
+            current.map((m) =>
+              m.id === placeholderId
+                ? {
+                    ...m,
+                    content: `❌ Erro ao enviar mensagem: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
+                  }
+                : m,
+            ),
+          );
         }
-      }
 
-      setSendingToAgents(new Set());
+        sync[agent.id] = liveMessages.length;
+        saveGroupSync(groupId, sync);
+        markAgentDone(agent.id);
+      }
     },
     [selectedGroup, messages, agents],
   );
@@ -787,6 +1110,7 @@ export function AgentGroupsManagement({
           messages={groupState.messages}
           onSend={groupState.handleSendMessage}
           onManageAgents={() => groupState.setManageDialogOpen(true)}
+          sendingToAgents={groupState.sendingToAgents}
         />
       ) : (
         <Box className="agent-empty">
