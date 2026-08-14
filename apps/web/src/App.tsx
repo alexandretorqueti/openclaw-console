@@ -286,6 +286,7 @@ type SpeechRecognitionLike = {
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
+  onspeechstart?: (() => void) | null;
   start: () => void;
   stop: () => void;
 };
@@ -315,6 +316,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // daqui (e não do closure do render), evitando estado obsoleto/draft vazio.
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const submitDraftRef = useRef<() => void>(() => {});
   const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); clearEnterDebounce(); };
   const listRef = useRef<HTMLDivElement | null>(null);
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
@@ -339,20 +341,37 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   busyRef.current = busy;
 
   // ---- Ditado por voz: o botão de microfone transcreve a fala e anexa o texto
-  // ao rascunho (não envia sozinho). O estado espelho via ref permite que os
-  // callbacks assíncronos do reconhecimento leiam o rascunho vivo. ----
+  // ao rascunho. Se o usuário ficar 10s sem falar (com o mic ligado), o texto
+  // acumulado é enviado automaticamente; desligar o botão cancela o envio. ----
+  const DICTATION_SILENCE_MS = 10_000;
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+  const silenceTimerRef = useRef<number | undefined>(undefined);
+  const clearSilenceTimer = () => { if (silenceTimerRef.current !== undefined) { window.clearTimeout(silenceTimerRef.current); silenceTimerRef.current = undefined; } };
+  const armSilenceTimer = () => {
+    clearSilenceTimer();
+    silenceTimerRef.current = window.setTimeout(() => {
+      silenceTimerRef.current = undefined;
+      // Se o usuário desligou o microfone, recognitionRef já é null → não envia
+      if (!recognitionRef.current) return;
+      const text = (draftRef.current || "").trim();
+      recognitionRef.current.stop(); // onend limpa refs e estado
+      if (text) submitDraftRef.current();
+    }, DICTATION_SILENCE_MS);
+  };
+  useEffect(() => () => { recognitionRef.current?.stop(); clearSilenceTimer(); }, []);
   const toggleListening = () => {
-    if (recognitionRef.current) { recognitionRef.current.stop(); return; }
+    if (recognitionRef.current) { clearSilenceTimer(); recognitionRef.current.stop(); return; }
     const Ctor = speechRecognitionCtor();
     if (!Ctor) return;
     const recognition = new Ctor();
     recognition.lang = "pt-BR";
     recognition.continuous = true;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
+    // Qualquer atividade de fala rearma o timer de silêncio
+    recognition.onspeechstart = () => { armSilenceTimer(); };
     recognition.onresult = (event) => {
+      armSilenceTimer();
       let text = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -408,8 +427,8 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       
       updateDraft(current.trim() ? `${current.trimEnd()}${separator}${text}` : text);
     };
-    recognition.onerror = () => { recognitionRef.current = null; setListening(false); };
-    recognition.onend = () => { recognitionRef.current = null; setListening(false); };
+    recognition.onerror = () => { clearSilenceTimer(); recognitionRef.current = null; setListening(false); };
+    recognition.onend = () => { clearSilenceTimer(); recognitionRef.current = null; setListening(false); };
     recognitionRef.current = recognition;
     try {
       recognition.start();
@@ -448,6 +467,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     setShowJumpToEnd(false);
     await onSend(text);
   };
+  submitDraftRef.current = submitDraft;
   const sendForm = async (event: FormEvent) => {
     event.preventDefault();
     await submitDraft();
@@ -543,7 +563,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
         {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
         <Tooltip title={displayModel(session, agent)}><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; return <MenuItem value={ref} key={ref}>{model.name}</MenuItem>; })}</Select></Tooltip>
         <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
-        <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}><span><IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton></span></Tooltip>
+        <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado (10s de silêncio envia a mensagem)" : "Ditar por voz (a fala vira texto no campo; 10s de silêncio envia)"}><span><IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton></span></Tooltip>
         <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
       </Box></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
