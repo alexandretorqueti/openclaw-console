@@ -3,6 +3,7 @@ import {
   AgentMutationResponseSchema,
   AgentContextFilesResponseSchema,
   ModelsResponseSchema,
+  NotificationsResponseSchema,
   ApiErrorSchema,
   ChatAbortRequestSchema,
   ChatAbortResponseSchema,
@@ -30,6 +31,7 @@ import {
   type AgentMutationResponse,
   type AgentContextFilesResponse,
   type ModelsResponse,
+  type NotificationsResponse,
   type ChatAbortRequest,
   type ChatAbortResponse,
   type ChatEvent,
@@ -148,6 +150,10 @@ export class OpenClawConsoleClient {
   listSessions(query: Partial<SessionsQuery> = {}): Promise<SessionsResponse> {
     const parsed = SessionsQuerySchema.parse(query);
     return this.get<SessionsResponse>(`/sessions?${toQueryString(parsed)}`, SessionsResponseSchema);
+  }
+
+  listNotifications(): Promise<NotificationsResponse> {
+    return this.get<NotificationsResponse>("/notifications", NotificationsResponseSchema);
   }
 
   getChatHistory(query: ChatHistoryQuery): Promise<ChatHistoryResponse> {

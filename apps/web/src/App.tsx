@@ -3,17 +3,17 @@ import { flushSync } from "react-dom";
 import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
-  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, PsychologyRounded,
+  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, NotificationsNoneRounded, PsychologyRounded,
   RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
   VolumeUpRounded,
   VolumeOffRounded,
 } from "@mui/icons-material";
 import {
-  Alert, Avatar, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton,
-  LinearProgress, Menu, MenuItem, Paper, Select, Stack, Switch, TextField, Tooltip, Typography,
+  Alert, Avatar, Badge, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton,
+  LinearProgress, Menu, MenuItem, Paper, Popover, Select, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
-import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiSession, type GatewayStatus } from "./api";
+import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiNotification, type ApiSession, type GatewayStatus } from "./api";
 import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 import { useTextToSpeech } from "./useTextToSpeech";
 
@@ -71,10 +71,29 @@ function messageText(message: ApiMessage) {
 }
 function clientId() { return globalThis.crypto?.randomUUID?.() ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 
-function BrandRail({ view, onNavigate }: { view: ConsoleView; onNavigate: (view: ConsoleView) => void }) {
+function BrandRail({ view, onNavigate, notifications, notificationsAnchor, onToggleNotifications, onCloseNotifications, onSelectNotification, onMarkAllRead }: {
+  view: ConsoleView; onNavigate: (view: ConsoleView) => void;
+  notifications: ApiNotification[]; notificationsAnchor: HTMLElement | null;
+  onToggleNotifications: (anchor: HTMLElement) => void; onCloseNotifications: () => void;
+  onSelectNotification: (session: ApiSession) => void; onMarkAllRead: () => void;
+}) {
   return <Box className="brand-rail">
     <Box className="brand-mark">C</Box>
-    <Stack spacing={1.2} alignItems="center" sx={{ mt: 3 }}>
+    <Tooltip title={notifications.length ? `${notifications.length} notificação${notifications.length === 1 ? "" : "es"}` : "Notificações"} placement="right">
+      <IconButton className={notificationsAnchor ? "rail-button active notification-bell" : "rail-button notification-bell"} onClick={(event) => onToggleNotifications(event.currentTarget)} aria-label="Notificações">
+        <Badge badgeContent={notifications.length} color="error" max={99} overlap="circular">
+          <NotificationsNoneRounded />
+        </Badge>
+      </IconButton>
+    </Tooltip>
+    <NotificationsPopover
+      notifications={notifications}
+      anchorEl={notificationsAnchor}
+      onClose={onCloseNotifications}
+      onSelect={onSelectNotification}
+      onMarkAllRead={onMarkAllRead}
+    />
+    <Stack spacing={1.2} alignItems="center" sx={{ mt: 2 }}>
       {navigation.map((item) => <Tooltip title={item.label} placement="right" key={item.label}>
         <IconButton className={item.view === view ? "rail-button active" : "rail-button"} disabled={!item.view} onClick={() => item.view && onNavigate(item.view)}>{item.icon}</IconButton>
       </Tooltip>)}
@@ -83,6 +102,42 @@ function BrandRail({ view, onNavigate }: { view: ConsoleView; onNavigate: (view:
     <IconButton className="rail-button"><SettingsRounded /></IconButton>
     <Avatar sx={{ width: 34, height: 34, fontSize: 13, bgcolor: "#5d50d6", mt: 1.5 }}>AT</Avatar>
   </Box>;
+}
+
+function NotificationsPopover({ notifications, anchorEl, onClose, onSelect, onMarkAllRead }: {
+  notifications: ApiNotification[]; anchorEl: HTMLElement | null; onClose: () => void;
+  onSelect: (session: ApiSession) => void; onMarkAllRead: () => void;
+}) {
+  return <Popover
+    open={Boolean(anchorEl)}
+    anchorEl={anchorEl}
+    onClose={onClose}
+    anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+    transformOrigin={{ vertical: "top", horizontal: "right" }}
+    slotProps={{ paper: { className: "notifications-paper" } }}
+  >
+    <Box className="notifications-popover">
+      <Box className="notifications-header">
+        <Typography variant="subtitle1" fontWeight={750}>Notificações</Typography>
+        {notifications.length > 0 && <Button size="small" onClick={onMarkAllRead}>Limpar tudo</Button>}
+      </Box>
+      {notifications.length === 0
+        ? <Box className="notifications-empty">Nenhuma notificação. Quando um agente responder em uma conversa que você não está vendo, ela aparece aqui.</Box>
+        : <Box className="notifications-list">{notifications.map(({ session, agent }) => {
+          const name = session.label ?? session.title ?? session.key;
+          return <Box className="notification-item" key={session.key} onClick={() => onSelect(session)}>
+            <Avatar className="notification-avatar" sx={{ bgcolor: `${agentColor(agent)}25`, border: `1px solid ${agentColor(agent)}55` }}>{agent.emoji ?? "🤖"}</Avatar>
+            <Box className="notification-body">
+              <Box className="notification-row">
+                <Typography variant="subtitle2" className="notification-title" title={name}>{name}</Typography>
+                <Typography variant="caption" color="text.secondary" className="notification-time">{relativeTime(session.lastActivityAt ?? session.updatedAt)}</Typography>
+              </Box>
+              <Typography variant="caption" className="notification-preview">{agent.name} · {session.lastMessagePreview ?? "Nova atividade na conversa"}</Typography>
+            </Box>
+          </Box>; })}
+        </Box>}
+    </Box>
+  </Popover>;
 }
 
 function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onShowDetails, onClose }: {
@@ -565,6 +620,8 @@ function ConsoleApp() {
   const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false); const processingBySessionRef = useRef(new Map<string, boolean>()); const [processingAgentIds, setProcessingAgentIds] = useState<Set<string>>(() => new Set());
   const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
+  const [notifications, setNotifications] = useState<ApiNotification[]>([]); const [notificationsAnchor, setNotificationsAnchor] = useState<HTMLElement | null>(null);
+  const notificationsRef = useRef<ApiNotification[]>([]); const agentsRef = useRef<ApiAgent[]>([]);
   const [chatsVisible, setChatsVisible] = useState<boolean>(loadChatsVisible);
   // Coluna fixa de conversas no modo desktop: estado separado do overlay mobile,
   // sempre inicia visível para nunca produzir uma coluna de largura 0 no grid.
@@ -577,6 +634,7 @@ function ConsoleApp() {
   // evitando o frame vazio ("piscadinha") ao terminar a escrita do agente.
   const terminalTextRef = useRef<string | undefined>(undefined);
   const selectedAgent = agents.find((agent) => agent.id === agentId); const selectedSession = sessions.find((session) => session.key === sessionKey); const selectedSessionAgentId = selectedSession ? sessionAgentId(selectedSession) : agentId; const connected = Boolean(status?.connected);
+  agentsRef.current = agents; notificationsRef.current = notifications;
   const isNarrow = viewportWidth <= 900;
   const gridColumns = useMemo(() => {
     if (view === "agents") return `${viewportWidth <= 720 ? 58 : 68}px minmax(0, 1fr)`;
@@ -587,7 +645,10 @@ function ConsoleApp() {
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) processingBySessionRef.current.set(session.key, session.hasActiveRun); }); refreshProcessingAgents(); }, [refreshProcessingAgents]);
-  const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); setAgentId((current) => current && nextAgents.some((a) => a.id === current) ? current : nextAgents[0]?.id ?? ""); void loadAgentActivity(nextAgents); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity]);
+  const loadNotifications = useCallback(async () => { try { const items = await api.notifications(); setNotifications((current) => { if (current.length === items.length && current.every((item, index) => item.session.key === items[index]?.session.key && item.session.unread === items[index]?.session.unread)) return current; return items; }); } catch { /* o refresh periódico reconcilia quando o Gateway voltar */ } }, []);
+  const markNotificationsRead = useCallback(async (sessionsToMark: Array<{ key: string; agentId: string }>) => { if (!sessionsToMark.length) return; const keys = new Set(sessionsToMark.map((session) => session.key)); setNotifications((current) => current.filter((item) => !keys.has(item.session.key))); await Promise.allSettled(sessionsToMark.map((session) => api.patchSession({ key: session.key, agentId: session.agentId, unread: false }))); }, []);
+  const openNotification = useCallback((session: ApiSession) => { const targetAgentId = sessionAgentId(session) ?? session.agentId; setAgentId(targetAgentId); setSessionKey(session.key); setView("conversations"); setNotificationsAnchor(null); void markNotificationsRead([session]); }, [markNotificationsRead]);
+  const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); setAgentId((current) => current && nextAgents.some((a) => a.id === current) ? current : nextAgents[0]?.id ?? ""); void loadAgentActivity(nextAgents); void loadNotifications(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity, loadNotifications]);
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
   const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 10); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => rows.some((s) => s.key === current) ? current : rows[0]?.key ?? ""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } }, [refreshProcessingAgents]);
   const refreshSessionMetadata = useCallback(async (key: string, id: string) => { try { const page = await api.sessions(id, 0, 200); const fresh = page.sessions.find((session) => session.key === key); if (!fresh) return; processingBySessionRef.current.set(key, fresh.hasActiveRun); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key ? { ...session, ...fresh } : session)); } catch { /* A próxima atualização SSE ou sondagem reconciliará os metadados. */ } }, [refreshProcessingAgents]);
@@ -607,11 +668,15 @@ function ConsoleApp() {
   }, [agentId, loadSessions]);
   useEffect(() => { initialRestoreRef.current = false; }, []);
   useEffect(() => { setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
+  // Ao abrir uma sessão, marcar como lida (o Gateway seta lastReadAt; novas respostas voltam a notificar)
+  useEffect(() => { const item = notificationsRef.current.find((n) => n.session.key === sessionKey); if (item) void markNotificationsRead([item.session]); }, [sessionKey, markNotificationsRead]);
+  // Reconciliação periódica das notificações (fonte da verdade é o Gateway)
+  useEffect(() => { const refresh = () => { if (document.visibilityState === "visible") void loadNotifications(); }; const timer = window.setInterval(refresh, 60_000); document.addEventListener("visibilitychange", refresh); window.addEventListener("focus", refresh); return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); window.removeEventListener("focus", refresh); }; }, [loadNotifications]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
-  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) return; if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
-    if (isTerminal) { const owner = agentIdFromSessionKey(sessionKey, event.agentId ?? agentId) ?? agentId; setProcessing(false); setRunId(undefined); if (event.state === "final" && terminalTextRef.current) tts.speak(terminalTextRef.current); void Promise.all([loadHistory(sessionKey, owner), refreshSessionMetadata(sessionKey, owner)]).catch(() => { setStreamText(""); terminalTextRef.current = undefined; }); window.setTimeout(() => void refreshSessionMetadata(sessionKey, owner), 800); if ("errorMessage" in event && event.errorMessage) setError(event.errorMessage); }
-  } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing]);
+  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; setNotifications((current) => { if (currentSessionKeyRef.current === key) return current.filter((item) => item.session.key !== key); const index = current.findIndex((item) => item.session.key === key); if (event.session!.unread && !event.session!.archived) { const agent = agentsRef.current.find((a) => a.id === event.session!.agentId); const item = { session: event.session!, agent: agent ?? { id: event.session!.agentId, name: event.session!.agentId, isDefault: false, status: "unknown" as const } }; if (index < 0) return [item, ...current]; const next = [...current]; next[index] = item; return next; } return current.filter((item) => item.session.key !== key); }); processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); if (event.sessionKey !== sessionKey) { if (isTerminal) { const owner = agentIdFromSessionKey(event.sessionKey, event.agentId ?? agentId) ?? agentId; setNotifications((current) => { if (current.some((item) => item.session.key === event.sessionKey)) return current; const agent = agentsRef.current.find((a) => a.id === owner); const session: ApiSession = { key: event.sessionKey, agentId: owner, title: event.sessionKey, state: "idle", archived: false, pinned: false, unread: true, hasActiveRun: false, lastActivityAt: Date.now(), updatedAt: Date.now(), ...(event.message?.content ? { lastMessagePreview: event.message.content } : {}) }; return [{ session, agent: agent ?? { id: owner, name: owner, isDefault: false, status: "unknown" as const } }, ...current]; }); } return; } if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
+    if (isTerminal) { const owner = agentIdFromSessionKey(sessionKey, event.agentId ?? agentId) ?? agentId; setProcessing(false); setRunId(undefined); if (event.state === "final" && terminalTextRef.current) tts.speak(terminalTextRef.current); void markNotificationsRead([{ key: sessionKey, agentId: owner }]); void Promise.all([loadHistory(sessionKey, owner), refreshSessionMetadata(sessionKey, owner)]).catch(() => { setStreamText(""); terminalTextRef.current = undefined; }); window.setTimeout(() => void refreshSessionMetadata(sessionKey, owner), 800); if ("errorMessage" in event && event.errorMessage) setError(event.errorMessage); }
+  } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing, markNotificationsRead]);
   useEffect(() => { if (!processing || !sessionKey || !selectedSessionAgentId) return; let cancelled = false; let inactiveChecks = 0; let timer: ReturnType<typeof setTimeout> | undefined; const reconcile = async () => { try { const page = await api.sessions(selectedSessionAgentId, 0, 200); const current = page.sessions.find((session) => session.key === sessionKey); if (current?.hasActiveRun) inactiveChecks = 0; else if (current && ++inactiveChecks >= 2) { cancelled = true; setSessionProcessing(sessionKey, false); if (currentSessionKeyRef.current === sessionKey) { setProcessing(false); setRunId(undefined); await Promise.all([loadHistory(sessionKey, selectedSessionAgentId), refreshSessionMetadata(sessionKey, selectedSessionAgentId)]); } } } catch { /* SSE remains authoritative while reconciliation is unavailable. */ } finally { if (!cancelled) timer = setTimeout(() => void reconcile(), 5_000); } }; timer = setTimeout(() => void reconcile(), 4_000); return () => { cancelled = true; if (timer) clearTimeout(timer); }; }, [processing, sessionKey, selectedSessionAgentId, loadHistory, refreshSessionMetadata, setSessionProcessing]);
   const loadMoreSessions = useCallback(() => { if (agentId && sessionsHasMore && !sessionsLoading && !sessionsLoadingMore) void loadSessions(agentId, sessionsNextOffset, true); }, [agentId, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset, loadSessions]);
   const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const wasAutoNamed = /^Chat \d+$/i.test(selectedSession.label ?? selectedSession.title ?? ""); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); terminalTextRef.current = undefined; flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } else if (wasAutoNamed && !/^\/(?:model|new|fork|abort)/i.test(message.trim())) { const suggested = suggestSessionName(message); if (suggested && suggested !== (selectedSession.label ?? selectedSession.title)) { try { await api.patchSession({ key: targetSessionKey, agentId: targetAgentId, label: suggested }); setSessions((current) => current.map((item) => item.key === targetSessionKey ? { ...item, label: suggested, title: suggested } : item)); } catch { /* renomeio não crítico */ } } } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
@@ -624,7 +689,11 @@ function ConsoleApp() {
 
   const groupState = useAgentGroups(agents);
 
-  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} />
+  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} notifications={notifications} notificationsAnchor={notificationsAnchor}
+    onToggleNotifications={(anchor) => setNotificationsAnchor((current) => current === anchor ? null : anchor)}
+    onCloseNotifications={() => setNotificationsAnchor(null)}
+    onSelectNotification={openNotification}
+    onMarkAllRead={() => void markNotificationsRead(notifications.map((item) => item.session))} />
     {view === "agents" ? <AgentManagement agents={agents} models={models} status={status} loading={loading} onRefresh={loadRoot} onError={setError} />
     : view === "groups" ? <>
       <GroupsPanel

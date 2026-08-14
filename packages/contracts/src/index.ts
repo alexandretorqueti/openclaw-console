@@ -119,6 +119,8 @@ export const SessionSchema = z
     archived: z.boolean().default(false),
     pinned: z.boolean().default(false),
     unread: z.boolean().default(false),
+    lastReadAt: OptionalTimestampSchema,
+    lastActivityAt: OptionalTimestampSchema,
     hasActiveRun: z.boolean().default(false),
     parentSessionKey: z.string().optional(),
     spawnedBy: z.string().optional(),
@@ -271,6 +273,21 @@ export const SessionsResponseSchema = z
   .strict();
 export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 
+export const NotificationItemSchema = z
+  .object({
+    session: SessionSchema,
+    agent: AgentSchema,
+  })
+  .strict();
+export type NotificationItem = z.infer<typeof NotificationItemSchema>;
+
+export const NotificationsResponseSchema = z
+  .object({
+    notifications: z.array(NotificationItemSchema),
+  })
+  .strict();
+export type NotificationsResponse = z.infer<typeof NotificationsResponseSchema>;
+
 export const ChatHistoryQuerySchema = z
   .object({
     sessionKey: NonEmptyStringSchema,
@@ -422,6 +439,7 @@ export type ConsoleEvent = z.infer<typeof ConsoleEventSchema>;
 export const BffStatusResponseSchema = StatusResponseSchema;
 export const BffAgentsResponseSchema = AgentsResponseSchema;
 export const BffSessionsResponseSchema = SessionsResponseSchema;
+export const BffNotificationsResponseSchema = NotificationsResponseSchema;
 export const BffChatHistoryResponseSchema = ChatHistoryResponseSchema;
 export const BffChatSendRequestSchema = ChatSendRequestSchema;
 export const BffChatSendResponseSchema = ChatSendResponseSchema;

@@ -9,6 +9,7 @@ import {
   ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatSendRequestSchema, CreateSessionRequestSchema,
   CreateAgentRequestSchema, DeleteAgentRequestSchema, DeleteSessionRequestSchema, ForkSessionRequestSchema, GatewayStatusSchema, PatchSessionRequestSchema,
   ModelsResponseSchema,
+  NotificationItemSchema, NotificationsResponseSchema,
   SessionChangedEventSchema, SessionsQuerySchema,
   UpdateAgentContextFilesRequestSchema, UpdateAgentContextFilesResponseSchema, UpdateAgentRequestSchema,
   type GatewayStatus,
@@ -136,7 +137,7 @@ gateway.on("event", (frame: GatewayEventFrame) => {
   const event = normalizeChatEvent(frame); if (event) sse("chat", event);
   if (frame.event === "sessions.changed") {
     const payload = record(frame.payload);
-    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens"].some((key) => key in payload);
+    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens", "unread", "lastReadAt", "lastActivityAt", "lastMessagePreview", "archived"].some((key) => key in payload);
     const normalized = hasSessionData ? normalizeSessions({ sessions: [payload] }).sessions[0] : undefined;
     const changed = SessionChangedEventSchema.safeParse({ sessionKey: typeof payload.sessionKey === "string" ? payload.sessionKey : typeof payload.key === "string" ? payload.key : undefined, agentId: typeof payload.agentId === "string" ? payload.agentId : undefined, reason: typeof payload.reason === "string" ? payload.reason : "changed", ...(normalized ? { session: normalized } : {}) });
     if (changed.success) sse("sessions", changed.data);
@@ -238,6 +239,25 @@ app.put("/api/agents/:agentId/files", async (request) => {
 app.get("/api/sessions", async (request) => {
   const query = parse(SessionsQuerySchema, request.query);
   return normalizeSessions(await rpc("sessions.list", { ...query, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true }));
+});
+app.get("/api/notifications", async () => {
+  const agents = normalizeAgents(await rpc("agents.list", {})).agents;
+  const pages = await Promise.allSettled(agents.map((agent) => rpc("sessions.list", { agentId: agent.id, limit: 200, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true })));
+  const notifications = [];
+  for (let index = 0; index < agents.length; index += 1) {
+    const agent = agents[index];
+    const result = pages[index];
+    if (!agent || result.status !== "fulfilled") continue;
+    const normalized = normalizeSessions(result.value);
+    for (const session of normalized.sessions) {
+      if (session.archived) continue;
+      const unread = session.unread === true || (session.lastReadAt === undefined && session.lastActivityAt !== undefined);
+      if (!unread) continue;
+      notifications.push(NotificationItemSchema.parse({ session, agent }));
+    }
+  }
+  notifications.sort((a, b) => (b.session.lastActivityAt ?? b.session.updatedAt ?? 0) - (a.session.lastActivityAt ?? a.session.updatedAt ?? 0));
+  return NotificationsResponseSchema.parse({ notifications });
 });
 app.get("/api/chat/history", async (request) => {
   const query = parse(ChatHistoryQuerySchema, request.query);
