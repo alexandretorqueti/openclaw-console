@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
-  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, NotificationsNoneRounded, PsychologyRounded,
+  ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, DownloadRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, NotificationsNoneRounded, PsychologyRounded,
   RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
   VolumeUpRounded,
@@ -68,6 +68,39 @@ function relativeTime(value?: number) {
 }
 function messageText(message: ApiMessage) {
   return message.content || "";
+}
+function chatAuthor(message: ApiMessage, agent?: ApiAgent) {
+  if (message.role === "user") return message.author ?? "Usuário";
+  if (message.role === "tool") return `Tool${message.toolName ? ` · ${message.toolName}` : ""}`;
+  return message.author ?? agent?.name ?? "Assistente";
+}
+function formatChatTimestamp(value?: number): string {
+  if (!value) return "";
+  const ms = value < 10_000_000_000 ? value * 1000 : value;
+  return new Date(ms).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+}
+// Gera o download de toda a conversa (do início até a última mensagem) em texto.
+function downloadChat(agent: ApiAgent | undefined, session: ApiSession | undefined, messages: ApiMessage[]) {
+  const name = session?.title ?? session?.label ?? session?.key ?? "conversa";
+  const lines: string[] = [`Conversa: ${name}`, `Agente: ${agent?.name ?? "—"}`, `Sessão: ${session?.key ?? "—"}`, `Exportado em: ${formatChatTimestamp(Date.now())}`,"", "".padEnd(48, "-")];
+  for (const message of messages) {
+    const role = message.role === "user" ? "Você" : message.role === "tool" ? "Ferramenta" : "Assistente";
+    const stamp = formatChatTimestamp(message.timestamp);
+    lines.push(`[${role}${stamp ? ` · ${stamp}` : ""}] ${chatAuthor(message, agent)}`);
+    const content = messageText(message).trim();
+    if (content) lines.push(content);
+    lines.push("");
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  const safeName = name.replace(/[\\/:*?"<>|]/g, "_").trim() || "conversa";
+  anchor.href = url;
+  anchor.download = `${safeName}.txt`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 function clientId() { return globalThis.crypto?.randomUUID?.() ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 
@@ -560,6 +593,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           {ttsSpeaking ? <VolumeUpRounded fontSize="small" sx={{ animation: "pulse 1.2s infinite" }} /> : ttsEnabled ? <VolumeUpRounded fontSize="small" /> : <VolumeOffRounded fontSize="small" />}
         </IconButton>
       </Tooltip>}
+      <Tooltip title="Salvar conversa"><IconButton size="small" onClick={() => downloadChat(agent, session, messages)} disabled={messages.length === 0}><DownloadRounded fontSize="small" /></IconButton></Tooltip>
       <Tooltip title="Detalhes da sessão"><IconButton size="small" onClick={onShowDetails}><DataObjectRounded fontSize="small" /></IconButton></Tooltip>
       {busy && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
       <Tooltip title="Criar fork"><IconButton size="small" onClick={onFork}><CallSplitRounded fontSize="small" /></IconButton></Tooltip>
