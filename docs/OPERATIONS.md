@@ -29,6 +29,7 @@ O frontend Vite, quando executado separadamente, usa o BFF em mesma origem/proxy
 | `OPENCLAW_GATEWAY_URL` | não | `ws://openclaw:18789` | WebSocket do Gateway |
 | `OPENCLAW_DEVICE_IDENTITY_PATH` | não | `/data/state/device.json` | identidade Ed25519 persistente |
 | `OPENCLAW_AGENT_WORKSPACE_ROOT` | não | `/data/.openclaw` | sugestão para workspaces novos |
+| `OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT` | não | `/data/workspace/projects/agentes` | raiz de workspaces criada pelo Gateway quando não montada no BFF |
 | `OPENCLAW_STATE_DIR_HOST` | no Compose | `/home/alexandre/docker/openclaw/openclaw_state` | state persistente montado no BFF para preparar workspaces |
 | `OPENCLAW_SHARED_PROJECTS_PATH` | não | `/data/workspace/projects` | destino do link `projects` criado para agentes novos |
 | `OPENCLAW_OLLAMA_URL` | não | `http://127.0.0.1:11434` | `/api/tags` para tamanhos locais |

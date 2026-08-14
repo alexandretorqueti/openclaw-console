@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -24,6 +24,7 @@ const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
+const gatewayAgentWorkspaceRoot = process.env.OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
@@ -193,7 +194,13 @@ app.get("/api/models", async () => {
 });
 app.post("/api/agents", async (request) => {
   const body = parse(CreateAgentRequestSchema, request.body);
-  await ensureProjectsLink({ workspace: body.workspace, workspaceRoot: defaultAgentWorkspaceRoot, projectsPath: sharedProjectsPath });
+  const localRelative = relative(resolve(defaultAgentWorkspaceRoot), resolve(body.workspace));
+  const gatewayRelative = relative(resolve(gatewayAgentWorkspaceRoot), resolve(body.workspace));
+  if (localRelative !== "" && !localRelative.startsWith("..") && !isAbsolute(localRelative)) {
+    await ensureProjectsLink({ workspace: body.workspace, workspaceRoot: defaultAgentWorkspaceRoot, projectsPath: sharedProjectsPath });
+  } else if (gatewayRelative === "" || gatewayRelative.startsWith("..") || isAbsolute(gatewayRelative)) {
+    throw Object.assign(new Error(`Agent workspace must be a descendant of ${gatewayAgentWorkspaceRoot}`), { code: "INVALID_WORKSPACE_PATH" });
+  }
   const payload = record(await rpc("agents.create", body));
   return { ok: true as const, agentId: typeof payload.agentId === "string" ? payload.agentId : body.name };
 });

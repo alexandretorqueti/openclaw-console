@@ -312,3 +312,8 @@ button, input, textarea { font: inherit; }
 }
 
 body:has(.MuiCssBaseline-root), body { background: #0b1020; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

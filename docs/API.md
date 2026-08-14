@@ -28,6 +28,11 @@ Antes de `agents.create`, o BFF prepara o workspace e cria o link simbólico
 dentro de `OPENCLAW_AGENT_WORKSPACE_ROOT`; entradas existentes nunca são
 substituídas. Um conflito impede a criação do agente.
 
+Workspaces pertencentes ao Gateway em `/data/workspace/projects/agentes` são
+aceitos mesmo quando esse volume não está montado no BFF; nesse caso o Gateway
+é responsável por criar o workspace. Outros caminhos externos continuam
+recusados.
+
 Arquivos aceitos: `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` e `MEMORY.md`.
 
 ## Sessões
