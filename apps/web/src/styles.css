@@ -235,6 +235,11 @@ button, input, textarea { font: inherit; }
   70% { box-shadow: 0 0 0 9px rgba(224, 82, 82, 0); }
   100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0); }
 }
+/* Anel de countdown do envio automático por silêncio (10s) */
+.composer-controls .mic-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.composer-controls .mic-wrap .mic-button { margin-bottom: 0; }
+.composer-controls .mic-countdown { position: absolute; pointer-events: none; color: #f0a23a !important; }
+.composer-controls .mic-countdown.urgent { color: #ef7180 !important; }
 
 .agent-profile-card { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 13px; border: 1px solid rgba(130, 141, 177, .12); border-radius: 14px !important; background: rgba(72, 81, 113, .06) !important; }
 .detail-label { color: #747d99; font-size: .67rem !important; letter-spacing: .08em !important; text-transform: uppercase; margin-bottom: 6px !important; }
