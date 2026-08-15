@@ -157,30 +157,70 @@ type AgentReply =
   | { kind: "silent" }
   | { kind: "timeout" };
 
+// Tempo máximo esperando a resposta de cada agente: 150 tentativas × 2s = 5 min.
+// Modelos locais pesados (ex.: gpt-oss:120b via Ollama) levam 3 min+ para gerar
+// respostas longas — o antigo limite de 2 min engolia essas respostas: o grupo
+// mostrava "⏳ Tempo esgotado" e a resposta real ficava órfã na sessão do agente.
+const GROUP_AGENT_MAX_WAIT_ATTEMPTS = 150;
+// Checagens extras após o run terminar sem resposta visível: o Gateway pode
+// persistir o turn final com atraso (janela pós-run). Sem o resgate, a resposta
+// real seria descartada como "silêncio" e nunca apareceria no grupo.
+const ORPHAN_RESCUE_ATTEMPTS = 3;
+const ORPHAN_RESCUE_DELAY_MS = 1500;
+
+async function latestVisibleAssistant(
+  sessionKey: string,
+  agentId: string,
+): Promise<{ content: string; timestamp?: number } | null> {
+  try {
+    const history = await api.history(sessionKey, agentId);
+    const last = history.messages[history.messages.length - 1];
+    if (last && last.role === "assistant" && last.content) {
+      return { content: last.content, timestamp: last.timestamp ?? Date.now() };
+    }
+  } catch (error) {
+    console.error(`Error polling for agent ${agentId}:`, error);
+  }
+  return null;
+}
+
 // Espera o run do agente terminar e devolve a última mensagem assistant.
 // "silent" = run terminou sem resposta visível (ex.: NO_REPLY suprimido pelo Gateway).
 async function waitForAgentResponse(
   sessionKey: string,
   agentId: string,
-  maxAttempts = 60,
+  maxAttempts = GROUP_AGENT_MAX_WAIT_ATTEMPTS,
 ): Promise<AgentReply> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    try {
-      const history = await api.history(sessionKey, agentId);
-      const last = history.messages[history.messages.length - 1];
-      if (last && last.role === "assistant" && last.content) {
-        return { kind: "reply", content: last.content, timestamp: last.timestamp ?? Date.now() };
-      }
-      // A partir da 2ª tentativa, verifica se o run já terminou sem resposta
-      // visível (ex.: o agente respondeu NO_REPLY e o Gateway suprimiu).
-      if (attempt >= 1) {
+    const visible = await latestVisibleAssistant(sessionKey, agentId);
+    if (visible) {
+      return { kind: "reply", content: visible.content, timestamp: visible.timestamp };
+    }
+    // A partir da 2ª tentativa, verifica se o run já terminou sem resposta
+    // visível (ex.: o agente respondeu NO_REPLY e o Gateway suprimiu).
+    if (attempt >= 1) {
+      let runEnded = false;
+      try {
         const page = await api.sessions(agentId, 0, 100);
         const session = page.sessions.find((s) => s.key === sessionKey);
-        if (session && !session.hasActiveRun) return { kind: "silent" };
+        runEnded = Boolean(session && !session.hasActiveRun);
+      } catch (error) {
+        console.error(`Error checking session for agent ${agentId}:`, error);
       }
-    } catch (error) {
-      console.error(`Error polling for agent ${agentId}:`, error);
+      if (runEnded) {
+        // O run terminou, mas a resposta final pode ainda estar sendo gravada no
+        // transcript (persistência pós-run). Antes de declarar silêncio, tenta
+        // resgatar a resposta com checagens extras curtas.
+        for (let rescue = 0; rescue < ORPHAN_RESCUE_ATTEMPTS; rescue += 1) {
+          await new Promise((resolve) => setTimeout(resolve, ORPHAN_RESCUE_DELAY_MS));
+          const rescued = await latestVisibleAssistant(sessionKey, agentId);
+          if (rescued) {
+            return { kind: "reply", content: rescued.content, timestamp: rescued.timestamp };
+          }
+        }
+        return { kind: "silent" };
+      }
     }
   }
   return { kind: "timeout" };
@@ -1065,7 +1105,7 @@ export function useAgentGroups(agents: ApiAgent[]) {
             );
             liveMessages = [...liveMessages, agentMessage];
           } else {
-            // Timeout
+            // Timeout (após GROUP_AGENT_MAX_WAIT_ATTEMPTS × 2s = 5 min sem resposta)
             const timeoutMessage: GroupMessage = {
               id: placeholderId,
               groupId,
