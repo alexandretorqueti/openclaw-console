@@ -474,11 +474,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   busyRef.current = busy;
 
   // ---- Ditado por voz: o botão de microfone transcreve a fala e anexa o texto
-  // ao rascunho. Se o usuário ficar 10s sem falar (com o mic ligado), o texto
+  // ao rascunho. Se o usuário ficar 6s sem falar (com o mic ligado), o texto
   // acumulado é enviado automaticamente (com countdown visível no botão);
   // desligar o botão cancela o envio. Após a resposta do agente, o mic religa
   // sozinho para o fluxo contínuo de ditado. ----
-  const DICTATION_SILENCE_MS = 8_000;
+  const DICTATION_SILENCE_MS = 6_000;
   const [listening, setListening] = useState(false);
   const [silenceRemainingMs, setSilenceRemainingMs] = useState<number | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -618,6 +618,17 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processing]);
   useEffect(() => () => { recognitionRef.current?.stop(); clearSilenceTimer(); }, []);
+  // Auto-liga o ditado ao abrir o chat (quando ocioso): o timer de silêncio só
+  // arma após a primeira fala (onspeechstart), então não há envio acidental.
+  // Com autoResumeRef=true, o mic também religa sozinho após a resposta do
+  // agente; clicar/digitar no campo (ou o botão) desliga sem religar.
+  useEffect(() => {
+    if (!speechRecognitionSupported()) return;
+    if (!session || busyRef.current || loading) return;
+    autoResumeRef.current = true;
+    startListening();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submitDraft = async () => {
     clearEnterDebounce();
@@ -702,7 +713,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     </Stack></Box>
     <MultiColumnStream ref={streamRef} className="stream-mode" layout={columnLayout.layout} items={streamItems} tail={streamTail} loading={loading} composerHeight={composerMeasure.height} />
     <Box className="stream-composer-row" ref={composerMeasure.ref} style={{ width: columnLayout.layout.columnWidth, left: columnLayout.layout.padX }}>
-    <Box component="form" onSubmit={sendForm} className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`}><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={1} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
+    <Box component="form" onSubmit={sendForm} className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`}><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={1} variant="standard" InputProps={{ disableUnderline: true }} onFocus={() => { if (recognitionRef.current) stopListening(); }} onKeyDown={(event) => {
+      // Digitar com o teclado encerra o ditado por voz.
+      if (recognitionRef.current) stopListening();
       // Regra única de envio, fiel ao atalho configurado:
       //  - "enter": Enter envia; Shift+Enter quebra linha.
       //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
@@ -740,7 +753,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
         </Box>
         <Box className="composer-toolbar-right">
-          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (8s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
+          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (6s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
           {listening && silenceRemainingMs !== null && silenceRemainingMs > 0 && <CircularProgress className={silenceRemainingMs <= 3000 ? "mic-countdown urgent" : "mic-countdown"} variant="determinate" size={46} thickness={3} value={(silenceRemainingMs / DICTATION_SILENCE_MS) * 100} />}
           <IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton>
           </Box></span></Tooltip>
