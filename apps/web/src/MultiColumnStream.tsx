@@ -211,11 +211,18 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
     }, [combined, layout]);
 
     // ---- <details> aberto/fechado muda a altura do item: sincroniza o estado
-    // entre as cópias (colunas vizinhas + medidor) e re-mede a cópia visível. ----
+    // entre as cópias (colunas vizinhas + medidor) e re-mede a cópia visível.
+    // Listener no ROOT (capture): o root existe desde o mount, mesmo quando o
+    // stream ainda está no spinner. Anexar ao .stream-scroll falhava quando ele
+    // montava DEPOIS (o efeito rodava com el=null e nunca mais re-anexava) —
+    // expandir/colapsar não re-mediam e as cópias ficavam dessincronizadas. ----
     useEffect(() => {
-      const el = scrollRef.current;
+      const el = rootRef.current;
       if (!el) return;
       const onToggle = (event: Event) => {
+        // Só eventos do usuário: o sync programático abaixo também dispara
+        // "toggle" nas cópias (com isTrusted=false) — ignorar evita recursão.
+        if (!event.isTrusted) return;
         const target = event.target;
         if (!(target instanceof HTMLDetailsElement)) return;
         const wrapper = target.closest<HTMLElement>("[data-stream-key]");
