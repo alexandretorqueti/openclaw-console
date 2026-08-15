@@ -125,11 +125,14 @@ function saveGroupMessages(groupId: string, messages: GroupMessage[]) {
 
 // System prompt for agents in a group
 const GROUP_AGENT_SYSTEM_PROMPT = `Você está em um grupo com outros agentes. Abaixo está a conversa do grupo (mensagens do usuário e dos outros agentes, na ordem em que ocorreram).
-Responda APENAS se:
-- A mensagem é diretamente para você
-- Você tem conhecimento/expertise relevante que falta aos outros
-- Você precisa corrigir algo importante
-Caso contrário, responda exatamente NO_REPLY (e nada mais) para ficar em silêncio.
+
+Responda SEMPRE que:
+- A mensagem for um pedido dirigido ao GRUPO INTEIRO (ex.: "cada um faça...", "todos vocês...", "o grupo deve...", "façam uma dissertação") — nesse caso TODOS devem responder, incluindo você
+- A mensagem mencionar VOCÊ diretamente (seu nome, seu projeto ou sua área de atuação)
+- Você tiver conhecimento/expertise relevante que falta aos outros
+- Você precisar corrigir algo importante
+
+Fique em silêncio APENAS quando a mensagem for conversa entre outros agentes, ruído, ou não pedir sua participação — nesse caso responda exatamente NO_REPLY (e nada mais).
 Quando responder, seja conciso e direto ao ponto — não precisa se identificar, o chat já mostra seu nome.`;
 
 const SYNC_STORAGE_PREFIX = "openclaw-group-sync-";
@@ -1086,7 +1089,7 @@ export function useAgentGroups(agents: ApiAgent[]) {
 
           if (
             response.kind === "silent" ||
-            (response.kind === "reply" && /^\s*NO_REPLY\s*$/i.test(response.content))
+            (response.kind === "reply" && /^\s*NO_REPLY[.!?]?\s*$/i.test(response.content))
           ) {
             // Agente escolheu ficar em silêncio — remove a bolha
             updateMessages((current) => current.filter((m) => m.id !== placeholderId));
