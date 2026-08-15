@@ -419,6 +419,7 @@ type SpeechRecognitionLike = {
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
+  onstart?: (() => void) | null;
   onspeechstart?: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -487,6 +488,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const silenceDeadlineRef = useRef<number | undefined>(undefined);
   const autoResumeRef = useRef(false);
   const wasProcessingRef = useRef(false);
+  // Parada intencional (botão, clique/digitação, envio) → não religa sozinho.
+  const intentionalStopRef = useRef(false);
+  // Timer de religada após o navegador encerrar a escuta por silêncio (no-speech).
+  const restartTimerRef = useRef<number | undefined>(undefined);
+  const silentEndCountRef = useRef(0);
   const clearSilenceTimer = () => {
     if (silenceTimerRef.current !== undefined) { window.clearTimeout(silenceTimerRef.current); silenceTimerRef.current = undefined; }
     if (countdownIntervalRef.current !== undefined) { window.clearInterval(countdownIntervalRef.current); countdownIntervalRef.current = undefined; }
@@ -506,7 +512,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       if (!text) { recognitionRef.current.stop(); return; }
       if (busyRef.current || loading) { armSilenceTimer(); return; } // ocupado: segue ouvindo
       autoResumeRef.current = true; // após a resposta, religa o mic
+      intentionalStopRef.current = true; // fim do segmento de ditado (não religa já)
       recognitionRef.current.stop(); // onend limpa refs e estado
+      // Zera a ref antes do submit: o envio automático não deve passar pelo guard
+      // de "envio manual interrompe o ditado" (que apagaria o autoResumeRef).
+      recognitionRef.current = null;
       void submitDraftRef.current();
     }, DICTATION_SILENCE_MS);
     countdownIntervalRef.current = window.setInterval(() => {
@@ -519,6 +529,28 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       setSilenceRemainingMs(remaining);
     }, 100);
   };
+  const clearRestartTimer = () => {
+    if (restartTimerRef.current !== undefined) { window.clearTimeout(restartTimerRef.current); restartTimerRef.current = undefined; }
+  };
+  // O navegador encerra a escuta sozinho após alguns segundos de silêncio
+  // (no-speech), mesmo com continuous:true. Nesse caso religa com backoff
+  // curto (0,25s→1,5s) para o mic ficar pronto até a primeira fala. Paradas
+  // intencionais (botão, clique/digitação, envio) não religam; durante a
+  // resposta do agente (busy) a religada fica por conta do efeito de processing.
+  const handleRecognitionEnd = () => {
+    const wasActive = recognitionRef.current !== null;
+    clearSilenceTimer();
+    recognitionRef.current = null;
+    setListening(false);
+    if (!wasActive || busyRef.current || intentionalStopRef.current) return;
+    silentEndCountRef.current += 1;
+    const delay = Math.min(250 * silentEndCountRef.current, 1500);
+    clearRestartTimer();
+    restartTimerRef.current = window.setTimeout(() => {
+      restartTimerRef.current = undefined;
+      if (!busyRef.current && !intentionalStopRef.current && !recognitionRef.current) startListening();
+    }, delay);
+  };
   const startListening = () => {
     if (recognitionRef.current) return;
     const Ctor = speechRecognitionCtor();
@@ -529,6 +561,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     recognition.interimResults = true;
     // Qualquer atividade de fala rearma o timer de silêncio
     recognition.onspeechstart = () => { armSilenceTimer(); };
+    recognition.onstart = () => { intentionalStopRef.current = false; silentEndCountRef.current = 0; };
     recognition.onresult = (event) => {
       armSilenceTimer();
       let text = "";
@@ -592,8 +625,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       
       updateDraft(current.trim() ? `${current.trimEnd()}${separator}${text}` : text);
     };
-    recognition.onerror = () => { clearSilenceTimer(); recognitionRef.current = null; setListening(false); };
-    recognition.onend = () => { clearSilenceTimer(); recognitionRef.current = null; setListening(false); };
+    recognition.onerror = (event) => {
+      if (event.error === "no-speech") { handleRecognitionEnd(); return; }
+      clearSilenceTimer(); recognitionRef.current = null; setListening(false);
+    };
+    recognition.onend = handleRecognitionEnd;
     recognitionRef.current = recognition;
     try {
       recognition.start();
@@ -604,7 +640,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       setListening(false);
     }
   };
-  const stopListening = () => { clearSilenceTimer(); autoResumeRef.current = false; recognitionRef.current?.stop(); };
+  const stopListening = () => { intentionalStopRef.current = true; clearRestartTimer(); clearSilenceTimer(); autoResumeRef.current = false; recognitionRef.current?.stop(); };
   const toggleListening = () => { if (recognitionRef.current) stopListening(); else startListening(); };
   // Quando a resposta do agente chega (processing true→false) e o envio foi
   // automático pelo silêncio, religa o microfone para continuar ditando.
@@ -617,7 +653,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processing]);
-  useEffect(() => () => { recognitionRef.current?.stop(); clearSilenceTimer(); }, []);
+  useEffect(() => () => { intentionalStopRef.current = true; clearRestartTimer(); recognitionRef.current?.stop(); clearSilenceTimer(); }, []);
   // Auto-liga o ditado ao abrir o chat (quando ocioso): o timer de silêncio só
   // arma após a primeira fala (onspeechstart), então não há envio acidental.
   // Com autoResumeRef=true, o mic também religa sozinho após a resposta do
