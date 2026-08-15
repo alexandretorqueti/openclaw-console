@@ -302,11 +302,17 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
             <Box className="stream-content" style={{ height: total }}>
               {layout.width > 0 && height > 0 && (
                 <Box className="stream-viewport" style={{ height: H, paddingInline: padX }}>
-                  {Array.from({ length: columns }, (_, k) => {
-                    const sliceStart = S + k * H;
-                    const sliceEnd = sliceStart + H;
-                    const visible = entries.filter((e) => e.top + e.h > sliceStart && e.top < sliceEnd);
-                    return (
+                  {(() => {
+                    // Colunas com conteúdo na fatia atual; se nenhuma tiver,
+                    // mantém ao menos a primeira (ex.: fim da conversa).
+                    const withContent = Array.from({ length: columns }, (_, k) => {
+                      const sliceStart = S + k * H;
+                      const sliceEnd = sliceStart + H;
+                      const visible = entries.filter((e) => e.top + e.h > sliceStart && e.top < sliceEnd);
+                      return { k, sliceStart, visible };
+                    }).filter((c) => c.visible.length > 0);
+                    const cols = withContent.length > 0 ? withContent : [{ k: 0, sliceStart: S, visible: [] }];
+                    return cols.map(({ k, sliceStart, visible }) => (
                       <Box key={k} className="stream-column" style={{ width: columnWidth, paddingInline: padX }}>
                         {visible.map((e) => (
                           <Box
@@ -319,8 +325,8 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
                           </Box>
                         ))}
                       </Box>
-                    );
-                  })}
+                    ));
+                  })()}
                 </Box>
               )}
             </Box>
