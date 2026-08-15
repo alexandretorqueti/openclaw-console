@@ -43,6 +43,29 @@ export type ColumnLayout = {
  * Retorna um ref de callback (reatribuído a cada montagem do elemento) e o
  * layout derivado da largura observada.
  */
+/** Mede a altura de um elemento (callback ref + ResizeObserver). */
+export function useMeasuredHeight<T extends HTMLElement>(): { ref: (el: T | null) => void; height: number } {
+  const [height, setHeight] = useState(0);
+  const roRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((el: T | null) => {
+    if (roRef.current) {
+      roRef.current.disconnect();
+      roRef.current = null;
+    }
+    if (!el) {
+      setHeight(0);
+      return;
+    }
+    const update = () => setHeight(el.clientHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    roRef.current = ro;
+  }, []);
+  useEffect(() => () => roRef.current?.disconnect(), []);
+  return { ref, height };
+}
+
 export function useColumnLayout<T extends HTMLElement>(): {
   ref: (el: T | null) => void;
   layout: ColumnLayout;
@@ -94,6 +117,8 @@ type MultiColumnStreamProps = {
   className?: string;
   /** Quando muda, força a rolagem ao fim (ex.: nova mensagem de grupo). */
   forceStickSignal?: number;
+  /** Altura da caixa de texto sobreposta (a 1ª coluna termina acima dela). */
+  composerHeight?: number;
 };
 
 /**
@@ -108,7 +133,7 @@ type MultiColumnStreamProps = {
  *    (itens novos/mudados apenas — sem medir tudo a cada frame).
  */
 export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumnStreamProps>(
-  function MultiColumnStream({ items, tail, loading, empty, layout, className, forceStickSignal }, ref) {
+  function MultiColumnStream({ items, tail, loading, empty, layout, className, forceStickSignal, composerHeight = 0 }, ref) {
     const rootRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const measureRef = useRef<HTMLDivElement | null>(null);
@@ -303,17 +328,22 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
               {layout.width > 0 && height > 0 && (
                 <Box className="stream-viewport" style={{ height: H, paddingInline: padX }}>
                   {(() => {
+                    // Alturas por coluna: a 1ª termina acima da caixa de texto
+                    // (col0H = H − composerHeight); as demais vão até a base (H).
+                    const col0H = Math.max(H - composerHeight, 64);
+                    const sliceStartFor = (k: number) => (k === 0 ? S : S + col0H + (k - 1) * H);
+                    const colHFor = (k: number) => (k === 0 ? col0H : H);
                     // Colunas com conteúdo na fatia atual; se nenhuma tiver,
                     // mantém ao menos a primeira (ex.: fim da conversa).
                     const withContent = Array.from({ length: columns }, (_, k) => {
-                      const sliceStart = S + k * H;
-                      const sliceEnd = sliceStart + H;
+                      const sliceStart = sliceStartFor(k);
+                      const sliceEnd = sliceStart + colHFor(k);
                       const visible = entries.filter((e) => e.top + e.h > sliceStart && e.top < sliceEnd);
                       return { k, sliceStart, visible };
                     }).filter((c) => c.visible.length > 0);
                     const cols = withContent.length > 0 ? withContent : [{ k: 0, sliceStart: S, visible: [] }];
                     return cols.map(({ k, sliceStart, visible }) => (
-                      <Box key={k} className="stream-column" style={{ width: columnWidth, paddingInline: padX }}>
+                      <Box key={k} className="stream-column" style={{ width: columnWidth, height: colHFor(k), paddingInline: padX }}>
                         {visible.map((e) => (
                           <Box
                             key={e.key}

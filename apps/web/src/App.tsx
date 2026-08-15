@@ -18,7 +18,7 @@ import {
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiNotification, type ApiSession, type GatewayStatus } from "./api";
 import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 import { useTextToSpeech } from "./useTextToSpeech";
-import { MultiColumnStream, useColumnLayout, type MultiColumnStreamHandle } from "./MultiColumnStream";
+import { MultiColumnStream, useColumnLayout, useMeasuredHeight, type MultiColumnStreamHandle } from "./MultiColumnStream";
 
 const colors = ["#7c6df2", "#24b47e", "#f0a23a", "#4c9ffe", "#e06c9f", "#27b4c8"];
 type ConsoleView = "conversations" | "agents" | "groups";
@@ -411,6 +411,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MultiColumnStreamHandle | null>(null);
   const columnLayout = useColumnLayout<HTMLDivElement>();
+  const composerMeasure = useMeasuredHeight<HTMLDivElement>();
   // Timer do "Enter com debounce": no modo ctrl-enter, Enter quebra linha; se o
   // usuário não digitar mais nada em 1s, a mensagem é enviada automaticamente.
   const enterDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -638,9 +639,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       {busy && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
       <Tooltip title="Criar fork"><IconButton size="small" onClick={onFork}><CallSplitRounded fontSize="small" /></IconButton></Tooltip>
     </Stack></Box>
-    <MultiColumnStream ref={streamRef} className="stream-mode" layout={columnLayout.layout} items={streamItems} tail={streamTail} loading={loading} />
-    <Box className="stream-composer-row" style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
-    <Box component="form" onSubmit={sendForm} className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`}><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
+    <MultiColumnStream ref={streamRef} className="stream-mode" layout={columnLayout.layout} items={streamItems} tail={streamTail} loading={loading} composerHeight={composerMeasure.height} />
+    <Box className="stream-composer-row" ref={composerMeasure.ref} style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
+    <Box component="form" onSubmit={sendForm} className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`}><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={1} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
       // Regra única de envio, fiel ao atalho configurado:
       //  - "enter": Enter envia; Shift+Enter quebra linha.
       //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
@@ -672,14 +673,18 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       enterDebounceRef.current = setTimeout(() => { enterDebounceRef.current = undefined; void submitDraft(); }, 1000);
     }} />
       <Box className="composer-controls">
-        {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
-        <Tooltip title={displayModel(session, agent)}><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; const blockedReason = modelSwitchBlockReason(model, session); return <MenuItem value={ref} key={ref} disabled={Boolean(blockedReason)} title={blockedReason ?? model.name}>{model.name}{blockedReason ? " · contexto insuficiente" : ""}</MenuItem>; })}</Select></Tooltip>
-        <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
-        <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (10s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
-        {listening && silenceRemainingMs !== null && silenceRemainingMs > 0 && <CircularProgress className={silenceRemainingMs <= 3000 ? "mic-countdown urgent" : "mic-countdown"} variant="determinate" size={46} thickness={3} value={(silenceRemainingMs / DICTATION_SILENCE_MS) * 100} />}
-        <IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton>
-        </Box></span></Tooltip>
-        <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
+        <Box className="composer-controls-row">
+          {busy && <Box className="composer-processing" role="status" aria-live="polite"><CircularProgress size={13} thickness={5} /><Typography variant="caption">Processando</Typography></Box>}
+          <Tooltip title={displayModel(session, agent)}><Select className="model-select" size="small" value={displayModel(session, agent)} onChange={(event) => { const ref = String(event.target.value); if (ref && ref !== displayModel(session, agent)) void onSend(`/model ${ref}`); }} renderValue={(value) => truncateLabel(String(value))} aria-label="Modelo da sessão"><MenuItem value={displayModel(session, agent)}>Modelo atual</MenuItem>{models.map((model) => { const ref = `${model.provider}/${model.id}`; const current = ref === displayModel(session, agent) || model.name === displayModel(session, agent); if (current) return null; const blockedReason = modelSwitchBlockReason(model, session); return <MenuItem value={ref} key={ref} disabled={Boolean(blockedReason)} title={blockedReason ?? model.name}>{model.name}{blockedReason ? " · contexto insuficiente" : ""}</MenuItem>; })}</Select></Tooltip>
+          <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
+        </Box>
+        <Box className="composer-controls-row composer-controls-actions">
+          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (10s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
+          {listening && silenceRemainingMs !== null && silenceRemainingMs > 0 && <CircularProgress className={silenceRemainingMs <= 3000 ? "mic-countdown urgent" : "mic-countdown"} variant="determinate" size={46} thickness={3} value={(silenceRemainingMs / DICTATION_SILENCE_MS) * 100} />}
+          <IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton>
+          </Box></span></Tooltip>
+          <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
+        </Box>
       </Box></Paper>
       <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box></Box>;
 }

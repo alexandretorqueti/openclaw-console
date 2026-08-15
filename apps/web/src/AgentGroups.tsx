@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import type { ApiAgent, ApiMessage } from "./api";
 import { api } from "./api";
-import { MultiColumnStream, useColumnLayout } from "./MultiColumnStream";
+import { MultiColumnStream, useColumnLayout, useMeasuredHeight } from "./MultiColumnStream";
 
 type SendShortcut = "enter" | "ctrl-enter";
 
@@ -436,6 +436,7 @@ export function GroupChatPane({
     [agents, group.agentIds],
   );
   const columnLayout = useColumnLayout<HTMLDivElement>();
+  const composerMeasure = useMeasuredHeight<HTMLDivElement>();
   // Itens da corrente do grupo (chave estável por mensagem).
   const groupStreamItems = useMemo(
     () =>
@@ -649,6 +650,7 @@ export function GroupChatPane({
         items={groupStreamItems}
         loading={false}
         forceStickSignal={messages.length}
+        composerHeight={composerMeasure.height}
         empty={
           <Box className="chat-empty-state">
             <AutoAwesomeRounded />
@@ -663,7 +665,7 @@ export function GroupChatPane({
         }
       />
 
-      <Box className="stream-composer-row" style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
+      <Box className="stream-composer-row" ref={composerMeasure.ref} style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
       <Box component="form" className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`} onSubmit={(event) => {
         event.preventDefault();
         submitMessage();
@@ -682,7 +684,7 @@ export function GroupChatPane({
             }
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            minRows={2}
+            minRows={1}
             variant="standard"
             InputProps={{ disableUnderline: true }}
             disabled={isProcessing || groupAgents.length === 0}
@@ -690,53 +692,57 @@ export function GroupChatPane({
             onKeyDown={handleComposerKey}
           />
           <Box className="composer-controls">
-            <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
-              <span>
-                <IconButton
-                  type="button"
-                  className={listening ? "mic-button listening" : "mic-button"}
-                  onClick={toggleListening}
-                  disabled={!speechRecognitionSupported() || groupAgents.length === 0}
-                  aria-label={listening ? "Parar ditado" : "Ditar por voz"}
-                >
-                  {listening ? <StopCircleRounded /> : <MicRounded />}
-                </IconButton>
-              </span>
-            </Tooltip>
-            {isProcessing && (
-              <Box className="composer-processing" role="status" aria-live="polite">
-                <CircularProgress size={13} thickness={5} />
-                <Typography variant="caption">
-                  {processingAgents.map((a) => a.emoji ?? "🤖").join("")} Processando
-                </Typography>
-              </Box>
-            )}
-            <Select
-              className="send-shortcut"
-              size="small"
-              value={sendShortcut}
-              onChange={(event) => {
-                const value = event.target.value as SendShortcut;
-                setSendShortcut(value);
-                localStorage.setItem("openclaw-console-send-shortcut", value);
-              }}
-              aria-label="Atalho para enviar mensagem"
-            >
-              <MenuItem value="enter">Enter envia</MenuItem>
-              <MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem>
-            </Select>
-            <Tooltip title={isProcessing ? `Aguardando ${processingAgents.map((a) => a.name).join(", ")} terminar` : ""}>
-              <span>
-                <IconButton
-                  type="submit"
-                  className="send-button"
-                  disabled={!draft.trim() || isProcessing || groupAgents.length === 0}
-                  aria-label="Enviar mensagem"
-                >
-                  {isProcessing ? <CircularProgress size={18} /> : <SendRounded />}
-                </IconButton>
-              </span>
-            </Tooltip>
+            <Box className="composer-controls-row">
+              {isProcessing && (
+                <Box className="composer-processing" role="status" aria-live="polite">
+                  <CircularProgress size={13} thickness={5} />
+                  <Typography variant="caption">
+                    {processingAgents.map((a) => a.emoji ?? "🤖").join("")} Processando
+                  </Typography>
+                </Box>
+              )}
+              <Select
+                className="send-shortcut"
+                size="small"
+                value={sendShortcut}
+                onChange={(event) => {
+                  const value = event.target.value as SendShortcut;
+                  setSendShortcut(value);
+                  localStorage.setItem("openclaw-console-send-shortcut", value);
+                }}
+                aria-label="Atalho para enviar mensagem"
+              >
+                <MenuItem value="enter">Enter envia</MenuItem>
+                <MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem>
+              </Select>
+            </Box>
+            <Box className="composer-controls-row composer-controls-actions">
+              <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
+                <span>
+                  <IconButton
+                    type="button"
+                    className={listening ? "mic-button listening" : "mic-button"}
+                    onClick={toggleListening}
+                    disabled={!speechRecognitionSupported() || groupAgents.length === 0}
+                    aria-label={listening ? "Parar ditado" : "Ditar por voz"}
+                  >
+                    {listening ? <StopCircleRounded /> : <MicRounded />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={isProcessing ? `Aguardando ${processingAgents.map((a) => a.name).join(", ")} terminar` : ""}>
+                <span>
+                  <IconButton
+                    type="submit"
+                    className="send-button"
+                    disabled={!draft.trim() || isProcessing || groupAgents.length === 0}
+                    aria-label="Enviar mensagem"
+                  >
+                    {isProcessing ? <CircularProgress size={18} /> : <SendRounded />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Box>
           </Box>
         </Paper>
         {groupAgents.length === 0 && (

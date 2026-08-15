@@ -104,7 +104,7 @@ button, input, textarea { font: inherit; }
 .loading-chat { min-height: 240px; display: grid; place-items: center; color: #7c6df2; }
 .floating-error { position: fixed !important; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(620px, calc(100vw - 32px)); z-index: 30; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
 
-.chat-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto 1fr auto; background: rgba(10, 15, 29, .34); }
+.chat-pane { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto 1fr auto; background: rgba(10, 15, 29, .34); }
 .chat-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 72px; padding: 13px 22px; border-bottom: 1px solid rgba(130, 141, 177, .13); backdrop-filter: blur(14px); }
 .chat-header > div:first-child { min-width: 0; overflow: hidden; }
 .chat-header .MuiTypography-h6 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1rem; font-weight: 750; }
@@ -194,35 +194,40 @@ button, input, textarea { font: inherit; }
   font-size: .82rem !important;
   resize: none;
 }
-/* ------------------ Coluna de controles (direita) ------------------ */
+/* ------------------ Controles (direita, 2 linhas compactas) ------------------ */
 .composer-controls {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  align-items: stretch;
+  justify-content: center;
   gap: 6px;
   min-width: 0;
-  width: 132px;
-  max-width: 132px;
-  padding: 8px;
+  padding: 6px;
   border-left: 1px solid rgba(130, 141, 177, .18);
   background: rgba(8, 12, 23, .5);
 }
-.composer-controls .model-select,
-.composer-controls .send-shortcut {
-  width: 100% !important;
-  max-width: none;
+.composer-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.composer-controls .model-select {
+  flex: 1 1 auto;
   min-width: 0 !important;
+  max-width: 170px;
   height: 32px;
+}
+.composer-controls .send-shortcut {
   flex: 0 0 auto;
+  height: 32px;
 }
 .composer-controls .send-button {
-  width: 100%;
-  height: 36px;
-  margin-top: auto;
-  border-radius: 10px !important;
   flex: 0 0 auto;
+  width: 40px;
+  height: 36px;
+  border-radius: 10px !important;
 }
 .theme-claro .composer .MuiInputBase-root { background: #fff !important; }
 .theme-claro .composer .MuiInputBase-root textarea { color: #1a2035 !important; }
@@ -387,7 +392,7 @@ body:has(.MuiCssBaseline-root), body { background: #0b1020; }
 .stream-item { position: absolute; left: 0; right: 0; }
 .stream-empty { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; }
 .stream-measurer { position: absolute; left: -10000px; top: 0; visibility: hidden; pointer-events: none; z-index: -1; }
-.stream-composer-row { min-width: 0; }
+.stream-composer-row { min-width: 0; position: absolute; bottom: 0; left: 0; z-index: 3; }
 .composer-wrap.stream-composer { padding: 0 0 15px; }
 /* No modo colunas, o espaçamento vertical entre itens vem do layout da corrente
    (gap uniforme); os margins originais das mensagens são zerados para não duplicar. */
