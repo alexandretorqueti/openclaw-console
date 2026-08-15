@@ -50,6 +50,10 @@ button, input, textarea { font: inherit; }
 
 .chats-panel { min-width: 0; min-height: 0; overflow: auto; padding: 19px 16px; background: rgba(12, 17, 32, .78); }
 .chats-panel { display: flex; flex-direction: column; gap: 14px; }
+/* Slot reservado da coluna de conversas: quando colapsada, o grid precisa de um filho na
+   track do meio para o ChatPane continuar na 3ª track (sem ele, o auto-placement joga o
+   chat na track de 0px e quebra o layout inteiro). */
+.chats-panel-placeholder { min-width: 0; min-height: 0; }
 
 /* Botão de ocultar/mostrar a coluna de conversas */
 .toggle-chats { color: #99a2c0 !important; background: rgba(116, 126, 160, .08) !important; }

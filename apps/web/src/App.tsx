@@ -911,9 +911,12 @@ function ConsoleApp() {
           </>
         ) : (
           <>
-            {chatsColumnVisible && <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+            {/* A track do meio precisa de um filho SEMPRE: quando colapsada, um placeholder
+                vazio ocupa a coluna de 0px e mantém o ChatPane na 3ª track. Sem ele, o grid
+                auto-placed joga o ChatPane na track de 0px e quebra o layout inteiro. */}
+            {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
-              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
+              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} /> : <Box className="chats-panel-placeholder" />}
             <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
           </>
         )}
