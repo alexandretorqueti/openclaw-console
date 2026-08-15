@@ -19,6 +19,7 @@ import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type Api
 import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 import { useTextToSpeech } from "./useTextToSpeech";
 import { MultiColumnStream, useColumnLayout, useMeasuredHeight, type MultiColumnStreamHandle } from "./MultiColumnStream";
+import { parseVoiceCommand, normalizeText } from "./voiceCommands";
 
 const colors = ["#7c6df2", "#24b47e", "#f0a23a", "#4c9ffe", "#e06c9f", "#27b4c8"];
 type ConsoleView = "conversations" | "agents" | "groups";
@@ -436,10 +437,12 @@ function speechRecognitionSupported(): boolean {
   return Boolean(speechRecognitionCtor());
 }
 
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsSpeaking = false, ttsSupported = false, onToggleTts }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsSpeaking = false, ttsSupported = false, onToggleTts, onVoiceNavigate, onVoiceOpenAgent }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
   models: ApiModel[]; initialDraft?: string; onDraftChange: (text: string) => void; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
   ttsEnabled?: boolean; ttsSpeaking?: boolean; ttsSupported?: boolean; onToggleTts?: () => void;
+  onVoiceNavigate?: (direction: "next" | "previous") => void;
+  onVoiceOpenAgent?: (name: string) => void;
 }) {
   // O rascunho sobrevive à troca de chat/agente: o estado inicial vem do mapa de
   // rascunhos do ConsoleApp (por sessão) e toda alteração é propagada de volta.
@@ -454,6 +457,12 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const streamRef = useRef<MultiColumnStreamHandle | null>(null);
   const columnLayout = useColumnLayout<HTMLDivElement>();
   const composerMeasure = useMeasuredHeight<HTMLDivElement>();
+  // Callbacks de navegação por voz: refs mantêm a versão mais recente (o
+  // reconhecimento fecha closures na criação — padrão usado pelo draft/envio).
+  const onVoiceNavigateRef = useRef(onVoiceNavigate);
+  onVoiceNavigateRef.current = onVoiceNavigate;
+  const onVoiceOpenAgentRef = useRef(onVoiceOpenAgent);
+  onVoiceOpenAgentRef.current = onVoiceOpenAgent;
   // Timer do "Enter com debounce": no modo ctrl-enter, Enter quebra linha; se o
   // usuário não digitar mais nada em 1s, a mensagem é enviada automaticamente.
   const enterDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -554,14 +563,20 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
             .replace(/([.?!])\s+([a-zà-ÿ])/g, (_m, punct, letter) => `${punct} ${letter.toUpperCase()}`)
             .replace(/\n\n\s*([a-zà-ÿ])/g, (_m, letter) => `\n\n${letter.toUpperCase()}`);
           
-          // Comando para enviar mensagem
-          if (/^\s*remeter\s*$/i.test(transcript)) {
-            // Se o transcript for apenas "remeter", envia a mensagem
-            const currentText = draftRef.current.trim();
-            if (currentText) {
-              void submitDraft();
+          // Comandos de voz: enviar, navegar entre chats, abrir agente
+          const voiceCommand = parseVoiceCommand(transcript);
+          if (voiceCommand) {
+            if (voiceCommand.type === "send") {
+              const currentText = draftRef.current.trim();
+              if (currentText) void submitDraft();
+            } else if (voiceCommand.type === "nextChat") {
+              onVoiceNavigateRef.current?.("next");
+            } else if (voiceCommand.type === "previousChat") {
+              onVoiceNavigateRef.current?.("previous");
+            } else if (voiceCommand.type === "openAgent") {
+              onVoiceOpenAgentRef.current?.(voiceCommand.name);
             }
-            return; // Não adiciona "remeter" ao texto
+            return; // Não adiciona o comando ao texto
           }
           
           text += transcript;
@@ -876,6 +891,33 @@ function ConsoleApp() {
   const abort = async () => { if (!selectedSession) return; await api.abort({ sessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), runId }); };
   const nextChatNumber = (targetAgentId: string) => { const existing = sessions.filter((session) => sessionAgentId(session) === targetAgentId && /^Chat \d+$/i.test(session.label ?? session.title ?? "")); const used = new Set(existing.map((session) => Number((session.label ?? session.title ?? "").match(/\d+/)?.[0] ?? 0))); let n = 1; while (used.has(n)) n += 1; return n; };
   const create = async (targetAgentId?: string) => { const target = agents.find((agent) => agent.id === (targetAgentId ?? agentId)); if (!target) return; const label = `Chat ${String(nextChatNumber(target.id)).padStart(2, "0")}`; try { const result = await api.createSession({ agentId: target.id, label }); await loadSessions(target.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  // Navegação por voz entre agentes (ordem de recência): abre a conversa mais
+  // recente do próximo/anterior agente.
+  const voiceNavigateAgent = useCallback((direction: "next" | "previous") => {
+    const list = agentsByRecent;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex((agent) => agent.id === agentId);
+    const base = currentIndex < 0 ? 0 : currentIndex;
+    const nextIndex = (base + (direction === "next" ? 1 : -1) + list.length) % list.length;
+    const target = list[nextIndex];
+    if (!target || target.id === agentId) return;
+    setAgentId(target.id);
+    setView("conversations");
+    void loadSessions(target.id);
+  }, [agentsByRecent, agentId, loadSessions]);
+  // "abrir <nome>" — pula direto para a conversa mais recente do agente.
+  const openAgentChat = useCallback((name: string) => {
+    const normalized = normalizeText(name);
+    if (!normalized) return;
+    const target = agents.find((agent) => {
+      const candidate = normalizeText(agent.name ?? agent.id);
+      return candidate.includes(normalized) || normalized.includes(candidate);
+    });
+    if (!target || target.id === agentId) return;
+    setAgentId(target.id);
+    setView("conversations");
+    void loadSessions(target.id);
+  }, [agents, agentId, loadSessions]);
   const renameSession = async (session: ApiSession) => { const label = window.prompt("Novo nome da sessão:", session.label ?? session.title)?.trim(); if (!label || label === (session.label ?? session.title)) return; try { await api.patchSession({ key: session.key, agentId: sessionAgentId(session), label }); setSessions((current) => current.map((item) => item.key === session.key ? { ...item, label, title: label } : item)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   // Ocultar/mostrar usa o campo archived do Gateway: a sessão continua existindo com
@@ -957,7 +999,7 @@ function ConsoleApp() {
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
           </>
         ) : (
           <>
@@ -967,7 +1009,7 @@ function ConsoleApp() {
             {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} /> : <Box className="chats-panel-placeholder" />}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
           </>
         )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />
