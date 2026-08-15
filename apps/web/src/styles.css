@@ -160,6 +160,7 @@ button, input, textarea { font: inherit; }
 .composer {
   min-width: 0;
   display: flex;
+  flex-direction: column;
   align-items: stretch;
   text-align: left;
   border: 1px solid rgba(130, 141, 177, .2);
@@ -194,44 +195,50 @@ button, input, textarea { font: inherit; }
   font-size: .82rem !important;
   resize: none;
 }
-/* ------------------ Controles (direita, 2 linhas compactas) ------------------ */
-.composer-controls {
+/* ------------------ Barra de ferramentas (abaixo do campo) ------------------ */
+.composer-toolbar {
   flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 6px;
-  border-left: 1px solid rgba(130, 141, 177, .18);
-  background: rgba(8, 12, 23, .5);
-}
-.composer-controls-row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px 6px 14px;
+  border-top: 1px solid rgba(130, 141, 177, .16);
+  background: rgba(8, 12, 23, .5);
+}
+.composer-toolbar-left {
+  display: flex;
+  align-items: center;
   gap: 6px;
   min-width: 0;
-}
-.composer-controls .model-select {
   flex: 1 1 auto;
-  min-width: 0 !important;
-  max-width: 170px;
+}
+.composer-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.composer-toolbar .model-select {
+  flex: 0 1 auto;
+  min-width: 150px;
+  max-width: 220px;
   height: 32px;
 }
-.composer-controls .send-shortcut {
+.composer-toolbar .send-shortcut {
   flex: 0 0 auto;
   height: 32px;
 }
-.composer-controls .send-button {
+.composer-toolbar .send-button {
   flex: 0 0 auto;
   width: 40px;
-  height: 36px;
+  height: 34px;
   border-radius: 10px !important;
 }
 .theme-claro .composer .MuiInputBase-root { background: #fff !important; }
 .theme-claro .composer .MuiInputBase-root textarea { color: #1a2035 !important; }
-.theme-claro .composer-controls { border-left-color: rgba(42, 51, 78, .12); background: #eef1f7; }
+.theme-claro .composer-toolbar { border-top-color: rgba(42, 51, 78, .1); background: #eef1f7; }
 .composer-wrap > .MuiTypography-caption { display: block; margin-top: 7px; font-size: .65rem; }
 .composer .MuiChip-root { height: 22px; font-size: .65rem; }
 .composer-processing { display: inline-flex; align-items: center; gap: 6px; min-height: 22px; padding: 0 7px; border-radius: 11px; color: #8e83ef; background: rgba(124, 109, 242, .1); }
@@ -246,19 +253,19 @@ button, input, textarea { font: inherit; }
 .send-button { width: 36px; height: 36px; color: white !important; background: linear-gradient(145deg, #8272f6, #5c4bd8) !important; }
 .send-button.Mui-disabled { opacity: .35; }
 /* Ditado por voz: microfone no composer; pulsante enquanto escuta */
-.composer-controls .mic-button { width: 100%; height: 36px; border-radius: 10px !important; flex: 0 0 auto; color: #7c6df2 !important; background: rgba(124, 109, 242, .14) !important; border: 1px solid rgba(124, 109, 242, .45) !important; }
-.composer-controls .mic-button:hover { color: #fff !important; background: rgba(124, 109, 242, .85) !important; }
-.composer-controls .mic-button.listening { color: #fff !important; background: linear-gradient(145deg, #e05252, #c23a3a) !important; animation: mic-pulse 1.8s ease-out infinite; }
+.composer-toolbar .mic-button { width: 36px; height: 34px; border-radius: 10px !important; flex: 0 0 auto; color: #7c6df2 !important; background: rgba(124, 109, 242, .14) !important; border: 1px solid rgba(124, 109, 242, .45) !important; }
+.composer-toolbar .mic-button:hover { color: #fff !important; background: rgba(124, 109, 242, .85) !important; }
+.composer-toolbar .mic-button.listening { color: #fff !important; background: linear-gradient(145deg, #e05252, #c23a3a) !important; animation: mic-pulse 1.8s ease-out infinite; }
 @keyframes mic-pulse {
   0% { box-shadow: 0 0 0 0 rgba(224, 82, 82, .45); }
   70% { box-shadow: 0 0 0 9px rgba(224, 82, 82, 0); }
   100% { box-shadow: 0 0 0 0 rgba(224, 82, 82, 0); }
 }
-/* Anel de countdown do envio automático por silêncio (10s) */
-.composer-controls .mic-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
-.composer-controls .mic-wrap .mic-button { margin-bottom: 0; }
-.composer-controls .mic-countdown { position: absolute; pointer-events: none; color: #f0a23a !important; }
-.composer-controls .mic-countdown.urgent { color: #ef7180 !important; }
+/* Anel de countdown do envio automático por silêncio (8s) */
+.composer-toolbar .mic-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.composer-toolbar .mic-wrap .mic-button { margin-bottom: 0; }
+.composer-toolbar .mic-countdown { position: absolute; pointer-events: none; color: #f0a23a !important; }
+.composer-toolbar .mic-countdown.urgent { color: #ef7180 !important; }
 
 .agent-profile-card { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 13px; border: 1px solid rgba(130, 141, 177, .12); border-radius: 14px !important; background: rgba(72, 81, 113, .06) !important; }
 .detail-label { color: #747d99; font-size: .67rem !important; letter-spacing: .08em !important; text-transform: uppercase; margin-bottom: 6px !important; }
@@ -393,10 +400,19 @@ body:has(.MuiCssBaseline-root), body { background: #0b1020; }
 .stream-empty { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; }
 .stream-measurer { position: absolute; left: -10000px; top: 0; visibility: hidden; pointer-events: none; z-index: -1; }
 .stream-composer-row { min-width: 0; position: absolute; bottom: 0; left: 0; z-index: 3; }
-.composer-wrap.stream-composer { padding: 0 0 15px; }
+.composer-wrap.stream-composer { padding: 0 0 6px; }
 /* No modo colunas, o espaçamento vertical entre itens vem do layout da corrente
    (gap uniforme); os margins originais das mensagens são zerados para não duplicar. */
 .stream-mode .message-row { margin-bottom: 0; }
 .stream-mode .technical-activity { margin-bottom: 0; }
 .stream-mode .thinking-activity { margin-bottom: 0; }
 .stream-mode .system-message { margin: 2px auto 0; }
+/* Bloco fundido de atividades/pensamentos consecutivos (contador + expandir) */
+.collapsed-activity { width: min(650px, calc(100% - 45px)); margin: 0 0 14px 45px; border: 1px solid rgba(139, 125, 235, .16); border-radius: 11px; background: rgba(92, 78, 179, .08); color: inherit; }
+.collapsed-activity > summary { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 7px 11px; cursor: pointer; list-style: none; user-select: none; }
+.collapsed-activity > summary::-webkit-details-marker { display: none; }
+.collapsed-activity > summary > svg { flex: 0 0 auto; font-size: 17px; color: #8b8fe0; }
+.collapsed-activity[open] > summary { border-bottom: 1px solid rgba(139, 125, 235, .14); }
+.collapsed-activity-items { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.collapsed-activity-items .technical-activity,
+.collapsed-activity-items .thinking-activity { width: 100%; margin: 0; }

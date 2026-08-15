@@ -18,6 +18,8 @@ const NEAR_BOTTOM_PX = 32;
 // Espaço vertical uniforme entre itens da corrente (no modo coluna única ele
 // substitui o margin-bottom das mensagens; os margins são zerados via CSS).
 const ITEM_GAP_PX = 16;
+/** Respiro entre o fim da 1ª coluna e o topo da caixa de texto. */
+const COMPOSER_GAP_PX = 12;
 // Altura estimada de um item ainda não medido — usada por um único frame, até
 // o medidor oculto devolver a altura real.
 const ESTIMATED_ITEM_HEIGHT = 110;
@@ -329,8 +331,8 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
                 <Box className="stream-viewport" style={{ height: H, paddingInline: padX }}>
                   {(() => {
                     // Alturas por coluna: a 1ª termina acima da caixa de texto
-                    // (col0H = H − composerHeight); as demais vão até a base (H).
-                    const col0H = Math.max(H - composerHeight, 64);
+                    // (col0H = H − composerHeight − respiro); as demais vão até a base (H).
+                    const col0H = Math.max(H - composerHeight - COMPOSER_GAP_PX, 64);
                     const sliceStartFor = (k: number) => (k === 0 ? S : S + col0H + (k - 1) * H);
                     const colHFor = (k: number) => (k === 0 ? col0H : H);
                     // Colunas com conteúdo na fatia atual; se nenhuma tiver,

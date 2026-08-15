@@ -667,7 +667,7 @@ export function GroupChatPane({
         }
       />
 
-      <Box className="stream-composer-row" ref={composerMeasure.ref} style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
+      <Box className="stream-composer-row" ref={composerMeasure.ref} style={{ width: columnLayout.layout.columnWidth, left: columnLayout.layout.padX }}>
       <Box component="form" className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`} onSubmit={(event) => {
         event.preventDefault();
         submitMessage();
@@ -693,8 +693,8 @@ export function GroupChatPane({
             autoFocus
             onKeyDown={handleComposerKey}
           />
-          <Box className="composer-controls">
-            <Box className="composer-controls-row">
+          <Box className="composer-toolbar">
+            <Box className="composer-toolbar-left">
               {isProcessing && (
                 <Box className="composer-processing" role="status" aria-live="polite">
                   <CircularProgress size={13} thickness={5} />
@@ -718,7 +718,7 @@ export function GroupChatPane({
                 <MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem>
               </Select>
             </Box>
-            <Box className="composer-controls-row composer-controls-actions">
+            <Box className="composer-toolbar-right">
               <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
                 <span>
                   <IconButton
