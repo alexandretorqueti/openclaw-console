@@ -427,7 +427,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // acumulado é enviado automaticamente (com countdown visível no botão);
   // desligar o botão cancela o envio. Após a resposta do agente, o mic religa
   // sozinho para o fluxo contínuo de ditado. ----
-  const DICTATION_SILENCE_MS = 10_000;
+  const DICTATION_SILENCE_MS = 8_000;
   const [listening, setListening] = useState(false);
   const [silenceRemainingMs, setSilenceRemainingMs] = useState<number | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -564,6 +564,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
 
   const submitDraft = async () => {
     clearEnterDebounce();
+    // Enviar manualmente interrompe o ditado (o auto-envio por silêncio já
+    // parou o mic antes de chegar aqui — recognitionRef fica null lá).
+    if (recognitionRef.current) stopListening();
     // Lê sempre o valor vivo via refs — seguro para o debounce (setTimeout) chamar
     // sem depender de closure de render.
     const text = (draftRef.current || "").trim();
@@ -679,7 +682,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
         </Box>
         <Box className="composer-controls-row composer-controls-actions">
-          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (10s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
+          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (8s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
           {listening && silenceRemainingMs !== null && silenceRemainingMs > 0 && <CircularProgress className={silenceRemainingMs <= 3000 ? "mic-countdown urgent" : "mic-countdown"} variant="determinate" size={46} thickness={3} value={(silenceRemainingMs / DICTATION_SILENCE_MS) * 100} />}
           <IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton>
           </Box></span></Tooltip>

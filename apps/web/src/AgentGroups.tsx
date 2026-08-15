@@ -538,6 +538,8 @@ export function GroupChatPane({
 
   const submitMessage = useCallback(() => {
     clearEnterDebounce();
+    // Enviar interrompe o ditado por voz, se ativo.
+    if (recognitionRef.current) recognitionRef.current.stop();
     const content = draftRef.current.trim();
     if (!content || sending) return;
     setSending(true);
