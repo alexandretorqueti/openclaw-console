@@ -67,6 +67,16 @@ button, input, textarea { font: inherit; }
 .new-chat-button { width: 100%; justify-content: flex-start !important; text-align: left !important; padding: 9px 12px !important; border-radius: 11px !important; color: #b6abff !important; text-transform: none !important; font-weight: 650 !important; font-size: .8rem !important; border: 1px dashed rgba(130, 141, 177, .24) !important; }
 .new-chat-button:hover { border-color: rgba(124, 109, 242, .5) !important; background: rgba(124, 109, 242, .08) !important; }
 .chats-section-title { margin: 2px 0 -4px; }
+.chat-section { display: flex; flex-direction: column; }
+.chat-section-header { display: flex; align-items: center; gap: 4px; padding: 7px 6px 5px; border-radius: 8px; cursor: pointer; user-select: none; color: #8b93ad; transition: background .15s ease; }
+.chat-section-header:hover { background: rgba(122, 105, 238, .08); }
+.chat-section-header:focus-visible { outline: 2px solid rgba(124, 109, 242, .55); outline-offset: 1px; }
+.chat-section-chevron { transition: transform .15s ease; }
+.chat-section-header.collapsed .chat-section-chevron { transform: rotate(-90deg); }
+.chat-section-title { margin: 0; font-weight: 750; letter-spacing: .09em; line-height: 1.2; }
+.chat-section-count { margin-left: auto; font-size: .68rem; line-height: 1.4; color: #737d9a; background: rgba(116, 126, 160, .14); border-radius: 99px; padding: 1px 7px; }
+.chat-kind-icon { flex: 0 0 auto; color: #8b93ad; opacity: .8; }
+.chat-item.archived .chat-name { opacity: .55; }
 .chat-list { display: flex; flex-direction: column; }
 .chat-item { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 9px 10px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: background .15s ease, border-color .15s ease; }
 .chat-item:hover { background: rgba(122, 105, 238, .09); }
@@ -344,3 +354,24 @@ body:has(.MuiCssBaseline-root), body { background: #0b1020; }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* ------------------------- Colunas contínuas (fluxo contínuo) -------------------------
+   Uma única "corrente" de mensagens cortada em fatias verticais: a coluna k mostra
+   a fatia [S + k·H, S + (k+1)·H) da corrente, com S = scroll (todas sincronizadas).
+   A emenda entre colunas é perfeita; itens que atravessam a emenda são desenhados
+   nas duas colunas. Alturas reais são medidas num contêiner oculto. */
+.stream-scroll { position: relative; flex: 1; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+.stream-content { position: relative; }
+.stream-viewport { position: sticky; top: 0; z-index: 1; display: flex; align-items: stretch; gap: 16px; }
+.stream-column { position: relative; overflow: hidden; min-width: 0; }
+.stream-item { position: absolute; left: 0; right: 0; }
+.stream-empty { min-width: 0; min-height: 0; flex: 1; display: flex; align-items: center; justify-content: center; }
+.stream-measurer { position: absolute; left: -10000px; top: 0; visibility: hidden; pointer-events: none; z-index: -1; }
+.stream-composer-row { min-width: 0; }
+.composer-wrap.stream-composer { padding: 0 0 15px; }
+/* No modo colunas, o espaçamento vertical entre itens vem do layout da corrente
+   (gap uniforme); os margins originais das mensagens são zerados para não duplicar. */
+.stream-mode .message-row { margin-bottom: 0; }
+.stream-mode .technical-activity { margin-bottom: 0; }
+.stream-mode .thinking-activity { margin-bottom: 0; }
+.stream-mode .system-message { margin: 2px auto 0; }

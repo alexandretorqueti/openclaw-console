@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alexandretorqueti/biblioteca-global-ui";
 import {
@@ -6,6 +6,8 @@ import {
   ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, DownloadRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, NotificationsNoneRounded, PsychologyRounded,
   RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
+  VisibilityOffRounded,
+  VisibilityRounded,
   VolumeUpRounded,
   VolumeOffRounded,
 } from "@mui/icons-material";
@@ -16,6 +18,7 @@ import {
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiNotification, type ApiSession, type GatewayStatus } from "./api";
 import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 import { useTextToSpeech } from "./useTextToSpeech";
+import { MultiColumnStream, useColumnLayout, type MultiColumnStreamHandle } from "./MultiColumnStream";
 
 const colors = ["#7c6df2", "#24b47e", "#f0a23a", "#4c9ffe", "#e06c9f", "#27b4c8"];
 type ConsoleView = "conversations" | "agents" | "groups";
@@ -183,37 +186,84 @@ function NotificationsPopover({ notifications, anchorEl, onClose, onSelect, onMa
   </Popover>;
 }
 
-function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onShowDetails, onClose }: {
+// Sessões de grupo têm key no padrão `agent:<id>:group:<groupId>` (ver AgentGroups.tsx).
+// Elas são separadas dos chats 1:1 na lista de conversas.
+function isGroupSession(session: ApiSession): boolean { return session.key.includes(":group:"); }
+
+// Estado de colapso das seções da lista de conversas, persistido localmente.
+// `true` = seção minimizada.
+const chatSectionsStorageKey = "openclaw-console-chat-sections";
+type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean };
+function loadChatSectionsState(): ChatSectionsState {
+  try {
+    const raw = localStorage.getItem(chatSectionsStorageKey);
+    if (!raw) return { chats: false, groups: false, hidden: true };
+    const parsed = JSON.parse(raw) as Partial<ChatSectionsState>;
+    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false };
+  } catch {
+    return { chats: false, groups: false, hidden: true };
+  }
+}
+
+function ChatSection({ title, count, collapsed, onToggle, children }: { title: string; count: number; collapsed: boolean; onToggle: () => void; children: ReactNode }) {
+  return <Box className="chat-section">
+    <Box className={collapsed ? "chat-section-header collapsed" : "chat-section-header"} role="button" tabIndex={0} aria-expanded={!collapsed} onClick={onToggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onToggle(); } }}>
+      <KeyboardArrowDownRounded className="chat-section-chevron" fontSize="small" />
+      <Typography variant="overline" className="chat-section-title">{title}</Typography>
+      {count > 0 && <Typography variant="caption" className="chat-section-count">{count}</Typography>}
+    </Box>
+    {!collapsed && <Box className="chat-list">{children}</Box>}
+  </Box>;
+}
+
+function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onToggleHidden, onShowDetails, onClose }: {
   agents: ApiAgent[]; selectedAgentId: string; onAgentSelect: (agentId: string) => void; sessions: ApiSession[]; selected?: ApiSession;
   loading: boolean; loadingMore: boolean; hasMore: boolean;
   onSelect: (session: ApiSession) => void; onCreate: () => void; onLoadMore: () => void;
-  onRename: (session: ApiSession) => void; onDelete: (session: ApiSession) => void; onShowDetails: (session: ApiSession) => void;
+  onRename: (session: ApiSession) => void; onDelete: (session: ApiSession) => void; onToggleHidden: (session: ApiSession) => void; onShowDetails: (session: ApiSession) => void;
   onClose?: () => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null); const sentinelRef = useRef<HTMLDivElement>(null);
   const [menuFor, setMenuFor] = useState<ApiSession | null>(null); const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [miniFor, setMiniFor] = useState<ApiSession | null>(null); const [miniPos, setMiniPos] = useState<{ x: number; y: number } | null>(null);
+  const [sectionsCollapsed, setSectionsCollapsed] = useState<ChatSectionsState>(loadChatSectionsState);
+  const toggleSection = (section: keyof ChatSectionsState) => setSectionsCollapsed((current) => { const next = { ...current, [section]: !current[section] }; try { localStorage.setItem(chatSectionsStorageKey, JSON.stringify(next)); } catch { /* armazenamento indisponível */ } return next; });
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
+  const chatSessions = sessions.filter((session) => !isGroupSession(session) && !session.archived);
+  const groupSessions = sessions.filter((session) => isGroupSession(session) && !session.archived);
+  const hiddenSessions = sessions.filter((session) => session.archived);
+  const renderSessionItem = (session: ApiSession) => {
+    const name = session.label ?? session.title ?? session.key;
+    return <Box key={session.key} className={[selected?.key === session.key ? "chat-item selected" : "chat-item", session.archived ? "archived" : ""].filter(Boolean).join(" ")} onClick={() => onSelect(session)}>
+      {isGroupSession(session) && <GroupRounded fontSize="small" className="chat-kind-icon" />}
+      <Typography className="chat-name" title={name}>{name}</Typography>
+      <IconButton className="chat-more" size="small" onClick={(event) => { event.stopPropagation(); setMenuFor(session); setMenuAnchor(event.currentTarget); }} aria-label="Opções da conversa"><MoreVertRounded /></IconButton>
+    </Box>;
+  };
   return <Box className="chats-panel" ref={panelRef}>
     <Box className="chats-brand"><Box className="brand-mark">C</Box><Typography variant="h6" sx={{ flex: 1 }}>Global IA</Typography>{onClose && <IconButton size="small" className="chats-close" onClick={onClose} aria-label="Fechar conversas"><ChevronRightRounded fontSize="small" /></IconButton>}</Box>
     <Select size="small" className="chats-agent-select" value={selectedAgentId} onChange={(event) => onAgentSelect(String(event.target.value))} renderValue={(value) => { const agent = agents.find((a) => a.id === value); return agent ? `${agent.emoji ?? "🤖"} ${agent.name}` : value; }}>
       {agents.map((agent) => <MenuItem key={agent.id} value={agent.id}>{agent.emoji ?? "🤖"} {agent.name}</MenuItem>)}
     </Select>
     <Button className="new-chat-button" startIcon={<AddRounded />} disabled={!selectedAgent} onClick={onCreate}>Novo chat</Button>
-    <Typography variant="overline" className="chats-section-title">Chats</Typography>
     {loading && <LinearProgress className="chats-loading-progress" />}
-    <Box className="chat-list">{sessions.map((session) => {
-      const name = session.label ?? session.title ?? session.key;
-      return <Box key={session.key} className={selected?.key === session.key ? "chat-item selected" : "chat-item"} onClick={() => onSelect(session)}>
-        <Typography className="chat-name" title={name}>{name}</Typography>
-        <IconButton className="chat-more" size="small" onClick={(event) => { event.stopPropagation(); setMenuFor(session); setMenuAnchor(event.currentTarget); }} aria-label="Opções da conversa"><MoreVertRounded /></IconButton>
-      </Box>; })}
-      {!loading && !sessions.length && <Box className="chat-empty">Nenhum chat deste agente.</Box>}
-    </Box>
+    <ChatSection title="Chats" count={chatSessions.length} collapsed={sectionsCollapsed.chats} onToggle={() => toggleSection("chats")}>
+      {chatSessions.map(renderSessionItem)}
+      {!loading && !chatSessions.length && <Box className="chat-empty">Nenhum chat 1:1 deste agente.</Box>}
+    </ChatSection>
+    <ChatSection title="Grupos" count={groupSessions.length} collapsed={sectionsCollapsed.groups} onToggle={() => toggleSection("groups")}>
+      {groupSessions.map(renderSessionItem)}
+      {!loading && !groupSessions.length && <Box className="chat-empty">Nenhuma sessão de grupo deste agente.</Box>}
+    </ChatSection>
+    {hiddenSessions.length > 0 && <ChatSection title="Ocultas" count={hiddenSessions.length} collapsed={sectionsCollapsed.hidden} onToggle={() => toggleSection("hidden")}>
+      {hiddenSessions.map(renderSessionItem)}
+      <Box className="chat-empty">Ocultar esconde a conversa da lista sem excluí-la. Use o menu da conversa para mostrá-la novamente.</Box>
+    </ChatSection>}
     <Box ref={sentinelRef} className="chats-more-sentinel">{loadingMore && <><CircularProgress size={18} /><Typography variant="caption">Carregando mais…</Typography></>}</Box>
     <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => { setMenuAnchor(null); setMenuFor(null); }}>
       <MenuItem onClick={() => { if (menuFor) onRename(menuFor); setMenuAnchor(null); setMenuFor(null); }}><EditRounded fontSize="small" sx={{ mr: 1 }} />Editar</MenuItem>
+      <MenuItem onClick={() => { if (menuFor) onToggleHidden(menuFor); setMenuAnchor(null); setMenuFor(null); }}>{menuFor?.archived ? <VisibilityRounded fontSize="small" sx={{ mr: 1 }} /> : <VisibilityOffRounded fontSize="small" sx={{ mr: 1 }} />}{menuFor?.archived ? "Mostrar" : "Ocultar"}</MenuItem>
       <MenuItem onClick={() => { if (menuFor) onDelete(menuFor); setMenuAnchor(null); setMenuFor(null); }}><DeleteOutlineRounded fontSize="small" sx={{ mr: 1 }} color="error" />Excluir</MenuItem>
       <MenuItem onClick={() => { if (menuFor) { setMiniFor(menuFor); setMiniPos(menuAnchor ? { x: menuAnchor.getBoundingClientRect().right, y: menuAnchor.getBoundingClientRect().top } : null); } setMenuAnchor(null); setMenuFor(null); }}><InfoOutlined fontSize="small" sx={{ mr: 1 }} />Detalhes</MenuItem>
     </Menu>
@@ -311,9 +361,6 @@ function toolActivityPreview(message: ApiMessage) {
 }
 
 type SendShortcut = "enter" | "ctrl-enter";
-// Região mínima considerada "fim da lista": só autoscrolla quando o scroll
-// já estiver colado no final (menos de ~0.5cm). Se o usuário subir 1cm, para.
-const NEAR_BOTTOM_PX = 32;
 // ------------------------- Ditado por voz (Web Speech API) -------------------------
 // Usa o reconhecimento de fala nativo do navegador (Chrome/Edge/Safari) para
 // transcrever o microfone direto no rascunho do composer — sem backend extra.
@@ -361,23 +408,14 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   draftRef.current = draft;
   const submitDraftRef = useRef<() => void>(() => {});
   const updateDraft = (value: string) => { setDraft(value); onDraftChange(value); clearEnterDebounce(); };
-  const listRef = useRef<HTMLDivElement | null>(null);
   const textareaInputRef = useRef<HTMLInputElement | null>(null);
+  const streamRef = useRef<MultiColumnStreamHandle | null>(null);
+  const columnLayout = useColumnLayout<HTMLDivElement>();
   // Timer do "Enter com debounce": no modo ctrl-enter, Enter quebra linha; se o
   // usuário não digitar mais nada em 1s, a mensagem é enviada automaticamente.
   const enterDebounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const clearEnterDebounce = useCallback(() => { if (enterDebounceRef.current) { clearTimeout(enterDebounceRef.current); enterDebounceRef.current = undefined; } }, []);
   useEffect(() => clearEnterDebounce, [clearEnterDebounce]);
-  // Política ÚNICA de rolagem: "grudar no fundo". Toda sessão abre no final
-  // (stick=true) e o próprio evento de scroll mantém o estado — rolar para cima
-  // desliga o acompanhamento, voltar ao fundo religa. Sem posições salvas em mapa,
-  // sem efeitos concorrentes: uma única escrita de scrollTop por atualização de
-  // conteúdo, em useLayoutEffect (antes do paint), o que elimina pulos e tremidas.
-  const stickToBottomRef = useRef(true);
-  const [showJumpToEnd, setShowJumpToEnd] = useState(false);
-  // busy = processando OU com run ativo segundo o Gateway (hasActiveRun chega via
-  // eventos de sessão e reconciliação periódica — o envio nunca trava por estado
-  // local obsoleto, ex.: evento "final" perdido numa reconexão do SSE).
   const busy = processing || Boolean(session?.hasActiveRun);
   // Ref espelho de "ocupado", para o debounce ler o valor vivo no disparo do timer.
   const busyRef = useRef(busy);
@@ -523,22 +561,6 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   }, [processing]);
   useEffect(() => () => { recognitionRef.current?.stop(); clearSilenceTimer(); }, []);
 
-  const handleScroll = useCallback((list: HTMLDivElement) => {
-    const distance = list.scrollHeight - list.clientHeight - list.scrollTop;
-    const atBottom = distance < NEAR_BOTTOM_PX;
-    stickToBottomRef.current = atBottom;
-    setShowJumpToEnd((current) => { const next = !atBottom && list.scrollHeight > list.clientHeight; return current === next ? current : next; });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (loading) return;
-    const list = listRef.current;
-    if (!list || !stickToBottomRef.current) return;
-    list.scrollTop = list.scrollHeight;
-  }, [loading, messages, streamText]);
-
-  const jumpToEnd = useCallback(() => { const list = listRef.current; if (!list) return; stickToBottomRef.current = true; list.scrollTop = list.scrollHeight; setShowJumpToEnd(false); }, []);
-
   const submitDraft = async () => {
     clearEnterDebounce();
     // Lê sempre o valor vivo via refs — seguro para o debounce (setTimeout) chamar
@@ -547,8 +569,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     if (!text || busyRef.current || loading) return;
     setDraft("");
     onDraftChange("");
-    stickToBottomRef.current = true;
-    setShowJumpToEnd(false);
+    streamRef.current?.stickToEnd();
     await onSend(text);
   };
   submitDraftRef.current = submitDraft;
@@ -591,10 +612,19 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       return <MessageBubble key={key} message={item.message} agent={agent} />;
     });
   }, [messages, agent, tailReusesStreamKey]);
+  // Itens da corrente para as colunas contínuas (chave estável por mensagem).
+  const streamItems = useMemo(
+    () => messageItems.map((element) => ({ key: String(element.key), node: element })),
+    [messageItems],
+  );
+  // Bolha de streaming em andamento (só quando o histórico ainda não contém o texto).
+  const streamTail = streamMessage && !tailMatchesStream && agent
+    ? <MessageBubble key="live-stream" message={streamMessage} agent={agent} />
+    : undefined;
 
-  if (!agent || !session) return <Box className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
+  if (!agent || !session) return <Box ref={columnLayout.ref} className="empty-chat"><AutoAwesomeRounded /><Typography variant="h6">Escolha uma sessão</Typography><Typography color="text.secondary">Abra uma conversa existente ou inicie uma nova.</Typography></Box>;
 
-  return <Box className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Tooltip title={mobile ? "Abrir conversas" : "Ocultar/mostrar conversas"}><IconButton size="small" className="toggle-chats" onClick={onToggleChats}><ChatBubbleOutlineRounded fontSize="small" /></IconButton></Tooltip><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
+  return <Box ref={columnLayout.ref} className="chat-pane"><Box className="chat-header"><Box className="chat-header-title"><Stack direction="row" spacing={1} alignItems="center"><Tooltip title={mobile ? "Abrir conversas" : "Ocultar/mostrar conversas"}><IconButton size="small" className="toggle-chats" onClick={onToggleChats}><ChatBubbleOutlineRounded fontSize="small" /></IconButton></Tooltip><Typography variant="h6">{session.title ?? session.label ?? "Sessão"}</Typography></Stack>
     <Typography variant="caption" color="text.secondary">{agent.name} · {session.key}</Typography></Box>
     <Stack direction="row" spacing={0.6} alignItems="center" className="chat-header-controls">
       <Tooltip title={session.contextTokens === undefined ? "Tamanho total do contexto indisponível" : `${formatTokens(session.totalTokens)} de ${formatTokens(session.contextTokens)} tokens utilizados`}><Chip size="small" variant="outlined" label={`Contexto ${contextLabel(session)}`} /></Tooltip>
@@ -608,12 +638,9 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       {busy && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
       <Tooltip title="Criar fork"><IconButton size="small" onClick={onFork}><CallSplitRounded fontSize="small" /></IconButton></Tooltip>
     </Stack></Box>
-    <Box sx={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}><Box className="message-list" ref={listRef} onScroll={(event) => handleScroll(event.currentTarget)}>
-      {loading && messages.length === 0 && !streamText ? <Box className="loading-chat"><CircularProgress size={28} /></Box> : messageItems}
-      {streamMessage && !tailMatchesStream && <MessageBubble key="live-stream" message={streamMessage} agent={agent} />}
-    </Box>
-      {showJumpToEnd && <Tooltip title="Ir para o final"><IconButton aria-label="Ir para o final" onClick={jumpToEnd} sx={{ position: "absolute", right: 12, bottom: 12, bgcolor: "background.paper", boxShadow: 2, "&:hover": { bgcolor: "action.hover" } }}><KeyboardArrowDownRounded /></IconButton></Tooltip>}</Box>
-    <Box component="form" onSubmit={sendForm} className="composer-wrap"><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
+    <MultiColumnStream ref={streamRef} className="stream-mode" layout={columnLayout.layout} items={streamItems} tail={streamTail} loading={loading} />
+    <Box className="stream-composer-row" style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
+    <Box component="form" onSubmit={sendForm} className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`}><Paper className="composer" elevation={0}><TextField inputRef={textareaInputRef} multiline maxRows={5} fullWidth placeholder={loading ? "Carregando histórico…" : busy ? `Escreva aqui (o envio só habilita quando ${agent.name} terminar)…` : `Conversar com ${agent.name} nesta sessão…`} disabled={false} value={draft} onChange={(e) => updateDraft(e.target.value)} minRows={2} variant="standard" InputProps={{ disableUnderline: true }} onKeyDown={(event) => {
       // Regra única de envio, fiel ao atalho configurado:
       //  - "enter": Enter envia; Shift+Enter quebra linha.
       //  - "ctrl-enter": Ctrl/Cmd+Enter envia; Enter quebra linha.
@@ -654,7 +681,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
         </Box></span></Tooltip>
         <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
       </Box></Paper>
-      <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box>;
+      <Typography variant="caption" color="text.secondary">A mensagem continuará a sessão real no Gateway.</Typography></Box></Box></Box>;
 }
 
 function SessionDetailsModal({ agent, session, open, onClose }: { agent?: ApiAgent; session?: ApiSession; open: boolean; onClose: () => void }) {
@@ -801,6 +828,16 @@ function ConsoleApp() {
   const create = async (targetAgentId?: string) => { const target = agents.find((agent) => agent.id === (targetAgentId ?? agentId)); if (!target) return; const label = `Chat ${String(nextChatNumber(target.id)).padStart(2, "0")}`; try { const result = await api.createSession({ agentId: target.id, label }); await loadSessions(target.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const renameSession = async (session: ApiSession) => { const label = window.prompt("Novo nome da sessão:", session.label ?? session.title)?.trim(); if (!label || label === (session.label ?? session.title)) return; try { await api.patchSession({ key: session.key, agentId: sessionAgentId(session), label }); setSessions((current) => current.map((item) => item.key === session.key ? { ...item, label, title: label } : item)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  // Ocultar/mostrar usa o campo archived do Gateway: a sessão continua existindo com
+  // histórico intacto, apenas sai da lista de conversas (e para de gerar notificações).
+  const toggleHiddenSession = async (session: ApiSession) => {
+    const nextHidden = !session.archived;
+    try {
+      await api.patchSession({ key: session.key, agentId: sessionAgentId(session), archived: nextHidden });
+      setSessions((current) => current.map((item) => item.key === session.key ? { ...item, archived: nextHidden, ...(nextHidden ? { unread: false } : {}) } : item));
+      if (nextHidden) setNotifications((current) => current.filter((item) => item.session.key !== session.key));
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
   const fork = async () => { if (!selectedAgent || !selectedSession) return; const label = window.prompt("Nome do fork:", `Fork · ${selectedSession.label ?? selectedSession.title ?? "sessão"}`)?.trim(); if (!label) return; try { const result = await api.forkSession({ parentSessionKey: selectedSession.key, agentId: sessionAgentId(selectedSession), label }); await loadSessions(selectedAgent.id); setSessionKey(result.key); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
 
   const groupState = useAgentGroups(agents);
@@ -869,14 +906,14 @@ function ConsoleApp() {
           <>
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
-              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
+              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
             <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
           </>
         ) : (
           <>
             {chatsColumnVisible && <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
-              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
+              onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} />}
             <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
           </>
         )}

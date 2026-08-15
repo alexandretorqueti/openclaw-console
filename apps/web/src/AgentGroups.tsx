@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import type { ApiAgent, ApiMessage } from "./api";
 import { api } from "./api";
+import { MultiColumnStream, useColumnLayout } from "./MultiColumnStream";
 
 type SendShortcut = "enter" | "ctrl-enter";
 
@@ -415,7 +416,6 @@ export function GroupChatPane({
   const [sendShortcut, setSendShortcut] = useState<SendShortcut>(
     () => (localStorage.getItem("openclaw-console-send-shortcut") === "enter" ? "enter" : "ctrl-enter")
   );
-  const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const draftRef = useRef(draft);
@@ -434,6 +434,22 @@ export function GroupChatPane({
   const groupAgents = useMemo(
     () => agents.filter((agent) => group.agentIds.includes(agent.id)),
     [agents, group.agentIds],
+  );
+  const columnLayout = useColumnLayout<HTMLDivElement>();
+  // Itens da corrente do grupo (chave estável por mensagem).
+  const groupStreamItems = useMemo(
+    () =>
+      messages.map((message) => ({
+        key: message.id,
+        node: (
+          <GroupMessageBubble
+            key={message.id}
+            message={message}
+            agent={groupAgents.find((a) => a.id === message.senderId)}
+          />
+        ),
+      })),
+    [messages, groupAgents],
   );
 
   // ---- Ditado por voz ----
@@ -560,12 +576,6 @@ export function GroupChatPane({
     [sendShortcut, sending, submitMessage, clearEnterDebounce],
   );
 
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [messages.length]);
-
   const isProcessing = sendingToAgents.size > 0;
   const processingAgents = useMemo(
     () => groupAgents.filter((a) => sendingToAgents.has(a.id)),
@@ -573,7 +583,7 @@ export function GroupChatPane({
   );
 
   return (
-    <Box className="chat-pane">
+    <Box ref={columnLayout.ref} className="chat-pane" style={{ display: "flex", flexDirection: "column" }}>
       <Box className="chat-header">
         <Box className="chat-header-title">
           <Stack direction="row" spacing={1} alignItems="center">
@@ -633,31 +643,28 @@ export function GroupChatPane({
         </Stack>
       </Box>
 
-      <Box sx={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <Box className="message-list" ref={scrollRef}>
-          {messages.length === 0 && (
-            <Box className="chat-empty-state">
-              <AutoAwesomeRounded />
-              <Typography variant="subtitle1">Grupo: {group.name}</Typography>
-              <Typography variant="body2" color="text.secondary" textAlign="center">
-                {group.description || "Envie uma mensagem para todos os agentes do grupo."}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" textAlign="center" sx={{ mt: 1 }}>
-                Agentes: {groupAgents.map((a) => a.name).join(", ") || "Nenhum agente adicionado"}
-              </Typography>
-            </Box>
-          )}
-          {messages.map((message) => (
-            <GroupMessageBubble
-              key={message.id}
-              message={message}
-              agent={groupAgents.find((a) => a.id === message.senderId)}
-            />
-          ))}
-        </Box>
-      </Box>
+      <MultiColumnStream
+        className="stream-mode"
+        layout={columnLayout.layout}
+        items={groupStreamItems}
+        loading={false}
+        forceStickSignal={messages.length}
+        empty={
+          <Box className="chat-empty-state">
+            <AutoAwesomeRounded />
+            <Typography variant="subtitle1">Grupo: {group.name}</Typography>
+            <Typography variant="body2" color="text.secondary" textAlign="center">
+              {group.description || "Envie uma mensagem para todos os agentes do grupo."}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" textAlign="center" sx={{ mt: 1 }}>
+              Agentes: {groupAgents.map((a) => a.name).join(", ") || "Nenhum agente adicionado"}
+            </Typography>
+          </Box>
+        }
+      />
 
-      <Box component="form" className="composer-wrap" onSubmit={(event) => {
+      <Box className="stream-composer-row" style={{ width: columnLayout.layout.columns > 1 ? columnLayout.layout.columnWidth : "100%", paddingInline: columnLayout.layout.columns > 1 ? columnLayout.layout.padX : 0 }}>
+      <Box component="form" className={`composer-wrap${columnLayout.layout.columns > 1 ? " stream-composer" : ""}`} onSubmit={(event) => {
         event.preventDefault();
         submitMessage();
       }}>
@@ -737,6 +744,7 @@ export function GroupChatPane({
             Adicione agentes ao grupo para começar a conversar.
           </Typography>
         )}
+      </Box>
       </Box>
     </Box>
   );
