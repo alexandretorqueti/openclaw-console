@@ -364,7 +364,10 @@ export const GroupMessageBubble = memo(function GroupMessageBubble({
           <Typography variant="subtitle2">{message.senderName}</Typography>
           <Stack direction="row" spacing={0.3} alignItems="center">
             <Typography variant="caption" color="text.secondary">
-              {new Date(message.timestamp).toLocaleTimeString("pt-BR", {
+              {new Date(message.timestamp).toLocaleString("pt-BR", {
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
                 hour: "2-digit",
                 minute: "2-digit",
               })}
