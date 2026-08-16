@@ -6,3 +6,10 @@ coverage/
 .vite/
 *.tsbuildinfo
 state/
+
+# secrets/sensível
+.env.bak*
+*.env.bak
+
+# diagnóstico temporário
+tmp-val/

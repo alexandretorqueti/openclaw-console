@@ -249,6 +249,36 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
       el.addEventListener("toggle", onToggle, true);
       return () => el.removeEventListener("toggle", onToggle, true);
     }, []);
+    // Cópias que montam DEPOIS (scroll cruzando a emenda, re-render por
+    // streaming) nascem com <details> fechado — o atributo open nativo é
+    // não-controlado e o sync acima só roda no toggle do usuário. Observa o
+    // root e, a cada cópia nova, espelha o estado de open do medidor (fonte
+    // da verdade, sempre sincronizada pelo handler de toggle). ----
+    useEffect(() => {
+      const root = rootRef.current;
+      if (!root) return;
+      const syncFromMeasurer = () => {
+        const measurer = root.querySelector(".stream-measurer");
+        if (!measurer) return;
+        measurer.querySelectorAll<HTMLElement>("[data-stream-key]").forEach((mCopy) => {
+          const key = mCopy.getAttribute("data-stream-key");
+          if (!key) return;
+          const mDetails = mCopy.querySelectorAll("details");
+          if (!mDetails.length) return;
+          root.querySelectorAll<HTMLElement>(`.stream-column [data-stream-key="${CSS.escape(key)}"]`).forEach((copy) => {
+            const cDetails = copy.querySelectorAll("details");
+            mDetails.forEach((md, i) => {
+              const cd = cDetails[i];
+              if (cd && cd.open !== md.open) cd.open = md.open;
+            });
+          });
+        });
+      };
+      const mo = new MutationObserver(() => syncFromMeasurer());
+      mo.observe(root, { childList: true, subtree: true });
+      syncFromMeasurer();
+      return () => mo.disconnect();
+    }, []);
 
     // ---- Rolagem: sincroniza o estado com o scroll real (rAF) e mantém a
     // política "grudar no fundo" (rolar para cima desliga; voltar ao fim liga). ----
