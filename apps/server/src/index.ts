@@ -27,6 +27,7 @@ if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
 const gatewayAgentWorkspaceRoot = process.env.OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
+const elevenlabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
 const startedAt = Date.now();
@@ -70,6 +71,7 @@ app.addHook("onRequest", async (request, reply) => {
 });
 const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN?.trim();
 if (!consoleToken) app.log.warn("OPENCLAW_CONSOLE_TOKEN is not set; /api endpoints are UNPROTECTED");
+if (!elevenlabsApiKey) app.log.warn("ELEVENLABS_API_KEY is not set; POST /api/tts responderá 503");
 const extractConsoleToken = (request: FastifyRequest): string | undefined => {
   const auth = request.headers.authorization;
   if (typeof auth === "string" && auth.startsWith("Bearer ")) return auth.slice(7).trim();
@@ -137,8 +139,16 @@ gateway.on("event", (frame: GatewayEventFrame) => {
   const event = normalizeChatEvent(frame); if (event) sse("chat", event);
   if (frame.event === "sessions.changed") {
     const payload = record(frame.payload);
-    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens", "unread", "lastReadAt", "lastActivityAt", "lastMessagePreview", "archived"].some((key) => key in payload);
-    const normalized = hasSessionData ? normalizeSessions({ sessions: [payload] }).sessions[0] : undefined;
+    // O gateway aninha a sessão em payload.session (buildSessionEventSnapshot /
+    // buildGatewaySessionSnapshot); campos como unread, lastReadAt, lastActivityAt,
+    // lastMessagePreview e archived só existem dentro desse objeto aninhado.
+    // Normalizar o objeto aninhado quando presente; senão, cair no envelope.
+    const nestedSession = payload.session !== null && typeof payload.session === "object" && !Array.isArray(payload.session)
+      ? (payload.session as Record<string, unknown>)
+      : undefined;
+    const sessionSource = nestedSession ?? payload;
+    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens", "unread", "lastReadAt", "lastActivityAt", "lastMessagePreview", "archived"].some((key) => key in sessionSource);
+    const normalized = hasSessionData ? normalizeSessions({ sessions: [sessionSource] }).sessions[0] : undefined;
     const changed = SessionChangedEventSchema.safeParse({ sessionKey: typeof payload.sessionKey === "string" ? payload.sessionKey : typeof payload.key === "string" ? payload.key : undefined, agentId: typeof payload.agentId === "string" ? payload.agentId : undefined, reason: typeof payload.reason === "string" ? payload.reason : "changed", ...(normalized ? { session: normalized } : {}) });
     if (changed.success) sse("sessions", changed.data);
   }
@@ -192,6 +202,32 @@ app.get("/api/models", async () => {
     return [{ id: row.id, name: row.name, provider: row.provider, ...(typeof row.alias === "string" ? { alias: row.alias } : {}), ...(typeof row.available === "boolean" ? { available: row.available } : {}), ...(typeof row.contextWindow === "number" ? { contextWindow: row.contextWindow } : {}), ...(sizeBytes !== undefined ? { sizeBytes } : {}), ...(typeof row.reasoning === "boolean" ? { reasoning: row.reasoning } : {}) }];
   });
   return ModelsResponseSchema.parse({ models });
+});
+const TtsRequestSchema = z.object({
+  text: z.string().trim().min(1).max(5000),
+  voiceId: z.string().trim().min(1).default("JBFqnCBsd6RMkjVDRZzb"),
+  modelId: z.string().trim().min(1).default("eleven_multilingual_v2"),
+}).strict();
+app.post("/api/tts", async (request, reply) => {
+  if (!elevenlabsApiKey) throw Object.assign(new Error("ELEVENLABS_API_KEY não configurada no servidor"), { code: "UNAVAILABLE" });
+  const body = parse(TtsRequestSchema, request.body);
+  const voiceId = body.voiceId ?? "JBFqnCBsd6RMkjVDRZzb";
+  const modelId = body.modelId ?? "eleven_multilingual_v2";
+  const upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
+    method: "POST",
+    headers: { "xi-api-key": elevenlabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
+    body: JSON.stringify({ text: body.text, model_id: modelId }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 500);
+    app.log.error({ status: upstream.status, detail }, "ElevenLabs TTS upstream failed");
+    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `ElevenLabs TTS error ${upstream.status}` } });
+  }
+  const audio = Buffer.from(await upstream.arrayBuffer());
+  reply.header("Content-Type", "audio/mpeg");
+  reply.header("Cache-Control", "no-store");
+  return reply.send(audio);
 });
 app.post("/api/agents", async (request) => {
   const body = parse(CreateAgentRequestSchema, request.body);
