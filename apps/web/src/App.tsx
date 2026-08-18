@@ -4,7 +4,7 @@ import { JsonGrid, LayoutContainer, LayoutItem, useBibliotecaTheme } from "@alex
 import {
   AddRounded, AutoAwesomeRounded, CallSplitRounded, ChatBubbleOutlineRounded, ChevronRightRounded,
   ContentCopyRounded, DarkModeRounded, DataObjectRounded, DeleteOutlineRounded, DownloadRounded, EditRounded, GroupRounded, HubRounded, InfoOutlined, KeyboardArrowDownRounded, LightModeRounded, MicRounded, MoreVertRounded, NotificationsNoneRounded, PsychologyRounded,
-  RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
+  MicOffRounded, RefreshRounded, SendRounded, SettingsRounded, SmartToyOutlined, StopCircleRounded,
   TerminalRounded,
   VisibilityOffRounded,
   VisibilityRounded,
@@ -191,18 +191,22 @@ function NotificationsPopover({ notifications, anchorEl, onClose, onSelect, onMa
 // Elas são separadas dos chats 1:1 na lista de conversas.
 function isGroupSession(session: ApiSession): boolean { return session.key.includes(":group:"); }
 
+// Sub-sessões são sessões criadas por outro agente via sessions_spawn: o contrato
+// expõe parentSessionKey (chave da sessão pai) quando isso acontece.
+function isSubSession(session: ApiSession): boolean { return Boolean(session.parentSessionKey); }
+
 // Estado de colapso das seções da lista de conversas, persistido localmente.
-// `true` = seção minimizada.
+// `true` = seção minimizada. `subagents` nasce minimizada por padrão.
 const chatSectionsStorageKey = "openclaw-console-chat-sections";
-type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean };
+type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean; subagents: boolean };
 function loadChatSectionsState(): ChatSectionsState {
   try {
     const raw = localStorage.getItem(chatSectionsStorageKey);
-    if (!raw) return { chats: false, groups: false, hidden: true };
+    if (!raw) return { chats: false, groups: false, hidden: true, subagents: true };
     const parsed = JSON.parse(raw) as Partial<ChatSectionsState>;
-    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false };
+    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false, subagents: parsed.subagents !== false };
   } catch {
-    return { chats: false, groups: false, hidden: true };
+    return { chats: false, groups: false, hidden: true, subagents: true };
   }
 }
 
@@ -231,13 +235,17 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
   const toggleSection = (section: keyof ChatSectionsState) => setSectionsCollapsed((current) => { const next = { ...current, [section]: !current[section] }; try { localStorage.setItem(chatSectionsStorageKey, JSON.stringify(next)); } catch { /* armazenamento indisponível */ } return next; });
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
-  const chatSessions = sessions.filter((session) => !isGroupSession(session) && !session.archived);
+  const isTask = (s: any) => { const n = s.label ?? s.title ?? s.key; return typeof n === 'string' && (n.startsWith('dev-') || n.startsWith('analysis-')); };
+  const taskSessions = sessions.filter((session) => isTask(session) && !session.archived);
+  const chatSessions = sessions.filter((session) => !isGroupSession(session) && !isSubSession(session) && !isTask(session) && !session.archived);
   const groupSessions = sessions.filter((session) => isGroupSession(session) && !session.archived);
+  const subagentSessions = sessions.filter((session) => isSubSession(session) && !session.archived);
   const hiddenSessions = sessions.filter((session) => session.archived);
   const renderSessionItem = (session: ApiSession) => {
     const name = session.label ?? session.title ?? session.key;
     return <Box key={session.key} className={[selected?.key === session.key ? "chat-item selected" : "chat-item", session.archived ? "archived" : ""].filter(Boolean).join(" ")} onClick={() => onSelect(session)}>
       {isGroupSession(session) && <GroupRounded fontSize="small" className="chat-kind-icon" />}
+      {isSubSession(session) && <HubRounded fontSize="small" className="chat-kind-icon" />}
       <Typography className="chat-name" title={name}>{name}</Typography>
       <IconButton className="chat-more" size="small" onClick={(event) => { event.stopPropagation(); setMenuFor(session); setMenuAnchor(event.currentTarget); }} aria-label="Opções da conversa"><MoreVertRounded /></IconButton>
     </Box>;
@@ -249,6 +257,10 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
     </Select>
     <Button className="new-chat-button" startIcon={<AddRounded />} disabled={!selectedAgent} onClick={onCreate}>Novo chat</Button>
     {loading && <LinearProgress className="chats-loading-progress" />}
+    <ChatSection title="Tarefas" count={taskSessions.length} collapsed={(sectionsCollapsed as any).tasks} onToggle={() => toggleSection('tasks' as any)}>
+      {taskSessions.map(renderSessionItem)}
+      {!loading && !taskSessions.length && <Box className="chat-empty">Nenhuma tarefa.</Box>}
+    </ChatSection>
     <ChatSection title="Chats" count={chatSessions.length} collapsed={sectionsCollapsed.chats} onToggle={() => toggleSection("chats")}>
       {chatSessions.map(renderSessionItem)}
       {!loading && !chatSessions.length && <Box className="chat-empty">Nenhum chat 1:1 deste agente.</Box>}
@@ -256,6 +268,10 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
     <ChatSection title="Grupos" count={groupSessions.length} collapsed={sectionsCollapsed.groups} onToggle={() => toggleSection("groups")}>
       {groupSessions.map(renderSessionItem)}
       {!loading && !groupSessions.length && <Box className="chat-empty">Nenhuma sessão de grupo deste agente.</Box>}
+    </ChatSection>
+    <ChatSection title="SubAgentes" count={subagentSessions.length} collapsed={sectionsCollapsed.subagents} onToggle={() => toggleSection("subagents")}>
+      {subagentSessions.map(renderSessionItem)}
+      {!loading && !subagentSessions.length && <Box className="chat-empty">Nenhuma sub-sessão criada por outro agente.</Box>}
     </ChatSection>
     {hiddenSessions.length > 0 && <ChatSection title="Ocultas" count={hiddenSessions.length} collapsed={sectionsCollapsed.hidden} onToggle={() => toggleSection("hidden")}>
       {hiddenSessions.map(renderSessionItem)}
@@ -438,10 +454,11 @@ function speechRecognitionSupported(): boolean {
   return Boolean(speechRecognitionCtor());
 }
 
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsSpeaking = false, ttsSupported = false, onToggleTts, onVoiceNavigate, onVoiceOpenAgent }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsSpeaking = false, ttsSupported = false, onToggleTts, micEnabled = true, onToggleMic, onVoiceNavigate, onVoiceOpenAgent }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
   models: ApiModel[]; initialDraft?: string; onDraftChange: (text: string) => void; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
   ttsEnabled?: boolean; ttsSpeaking?: boolean; ttsSupported?: boolean; onToggleTts?: () => void;
+  micEnabled?: boolean; onToggleMic?: () => void;
   onVoiceNavigate?: (direction: "next" | "previous") => void;
   onVoiceOpenAgent?: (name: string) => void;
 }) {
@@ -552,6 +569,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     }, delay);
   };
   const startListening = () => {
+    if (!micEnabled) return;
     if (recognitionRef.current) return;
     const Ctor = speechRecognitionCtor();
     if (!Ctor) return;
@@ -642,12 +660,17 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   };
   const stopListening = () => { intentionalStopRef.current = true; clearRestartTimer(); clearSilenceTimer(); autoResumeRef.current = false; recognitionRef.current?.stop(); };
   const toggleListening = () => { if (recognitionRef.current) stopListening(); else startListening(); };
+  // Mic desativado no topo da página: interrompe o ditado em andamento imediatamente.
+  useEffect(() => {
+    if (!micEnabled && recognitionRef.current) stopListening();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micEnabled]);
   // Quando a resposta do agente chega (processing true→false) e o envio foi
   // automático pelo silêncio, religa o microfone para continuar ditando.
   useEffect(() => {
     const finished = wasProcessingRef.current && !processing;
     wasProcessingRef.current = processing;
-    if (finished && autoResumeRef.current && !recognitionRef.current) {
+    if (finished && autoResumeRef.current && micEnabled && !recognitionRef.current) {
       autoResumeRef.current = false;
       startListening();
     }
@@ -660,6 +683,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   // agente; clicar/digitar no campo (ou o botão) desliga sem religar.
   useEffect(() => {
     if (!speechRecognitionSupported()) return;
+    if (!micEnabled) return;
     if (!session || busyRef.current || loading) return;
     autoResumeRef.current = true;
     startListening();
@@ -742,6 +766,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           {ttsSpeaking ? <VolumeUpRounded fontSize="small" sx={{ animation: "pulse 1.2s infinite" }} /> : ttsEnabled ? <VolumeUpRounded fontSize="small" /> : <VolumeOffRounded fontSize="small" />}
         </IconButton>
       </Tooltip>}
+      <Tooltip title={micEnabled ? "Desativar microfone (esconde os botões de ditado por voz)" : "Ativar microfone (mostra os botões de ditado por voz)"}>
+        <IconButton size="small" onClick={onToggleMic} color={micEnabled ? "primary" : "default"} aria-label={micEnabled ? "Desativar microfone" : "Ativar microfone"}>
+          {micEnabled ? <MicRounded fontSize="small" /> : <MicOffRounded fontSize="small" />}
+        </IconButton>
+      </Tooltip>
       <Tooltip title="Salvar conversa"><IconButton size="small" onClick={() => downloadChat(agent, session, messages)} disabled={messages.length === 0}><DownloadRounded fontSize="small" /></IconButton></Tooltip>
       <Tooltip title="Detalhes da sessão"><IconButton size="small" onClick={onShowDetails}><DataObjectRounded fontSize="small" /></IconButton></Tooltip>
       {busy && <Tooltip title="Interromper"><IconButton color="error" size="small" onClick={() => void onAbort()}><StopCircleRounded /></IconButton></Tooltip>}
@@ -789,10 +818,10 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
           <Select className="send-shortcut" size="small" value={sendShortcut} onChange={(event) => onShortcutChange(event.target.value as SendShortcut)} aria-label="Atalho para enviar mensagem"><MenuItem value="enter">Enter envia</MenuItem><MenuItem value="ctrl-enter">Ctrl+Enter envia</MenuItem></Select>
         </Box>
         <Box className="composer-toolbar-right">
-          <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (6s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
+          {micEnabled && <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? (silenceRemainingMs !== null && silenceRemainingMs > 0 ? `Envia em ${Math.ceil(silenceRemainingMs / 1000)}s — clique para cancelar` : "Parar ditado") : "Ditar por voz (6s de silêncio envia; o mic religa após a resposta)"}><span><Box className="mic-wrap">
           {listening && silenceRemainingMs !== null && silenceRemainingMs > 0 && <CircularProgress className={silenceRemainingMs <= 3000 ? "mic-countdown urgent" : "mic-countdown"} variant="determinate" size={46} thickness={3} value={(silenceRemainingMs / DICTATION_SILENCE_MS) * 100} />}
           <IconButton type="button" className={listening ? "mic-button listening" : "mic-button"} onClick={toggleListening} disabled={!speechRecognitionSupported()} aria-label={listening ? "Parar ditado" : "Ditar por voz"}>{listening ? <StopCircleRounded /> : <MicRounded />}</IconButton>
-          </Box></span></Tooltip>
+          </Box></span></Tooltip>}
           <IconButton type="submit" className="send-button" disabled={!draft.trim() || busy || loading}><SendRounded /></IconButton>
         </Box>
       </Box></Paper></Box></Box></Box>;
@@ -819,8 +848,10 @@ function SessionDetailsModal({ agent, session, open, onClose }: { agent?: ApiAge
 const shortcutStorageKey = "openclaw-console-send-shortcut";
 const chatsVisibleStorageKey = "openclaw-console-chats-visible";
 const uiStateStorageKey = "openclaw-console-ui-state";
+const micEnabledStorageKey = "openclaw-console-mic-enabled";
 function loadSendShortcut(): SendShortcut { return localStorage.getItem(shortcutStorageKey) === "enter" ? "enter" : "ctrl-enter"; }
 function loadChatsVisible(): boolean { return localStorage.getItem(chatsVisibleStorageKey) !== "false"; }
+function loadMicEnabled(): boolean { return localStorage.getItem(micEnabledStorageKey) !== "false"; }
 function loadSavedUiState(): { agentId: string; sessionKey: string } {
   try {
     const raw = localStorage.getItem(uiStateStorageKey);
@@ -864,6 +895,9 @@ function ConsoleApp() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [sendShortcut, setSendShortcut] = useState<SendShortcut>(loadSendShortcut); const gatewayConnectedRef = useRef(false); const statusProbeRef = useRef<Promise<boolean> | undefined>(undefined);
   const tts = useTextToSpeech();
+  const [micEnabled, setMicEnabled] = useState<boolean>(loadMicEnabled);
+  useEffect(() => { try { localStorage.setItem(micEnabledStorageKey, String(micEnabled)); } catch { /* storage unavailable */ } }, [micEnabled]);
+  const toggleMic = () => setMicEnabled((current) => !current);
   const [agents, setAgents] = useState<ApiAgent[]>([]); const [models, setModels] = useState<ApiModel[]>([]); const [sessions, setSessions] = useState<ApiSession[]>([]); const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [status, setStatus] = useState<GatewayStatus>(); const [agentId, setAgentId] = useState(() => loadSavedUiState().agentId); const [sessionKey, setSessionKey] = useState(() => loadSavedUiState().sessionKey); const currentSessionKeyRef = useRef(""); const initialRestoreRef = useRef(true); const [sessionId, setSessionId] = useState<string>();
   const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
@@ -871,6 +905,9 @@ function ConsoleApp() {
   const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
   const [notifications, setNotifications] = useState<ApiNotification[]>([]); const [notificationsAnchor, setNotificationsAnchor] = useState<HTMLElement | null>(null);
   const notificationsRef = useRef<ApiNotification[]>([]); const agentsRef = useRef<ApiAgent[]>([]);
+  // Notificações aguardando o agente PARAR de processar (hasActiveRun false) para serem exibidas.
+  const pendingNotificationsRef = useRef(new Map<string, ApiNotification>());
+  const notificationAudioRef = useRef<AudioContext | null>(null); const notificationsInitializedRef = useRef(false);
   // Timestamp da última conversa por agente (max de lastActivityAt/updatedAt das sessões) — ordena o combo de agentes por recência.
   const [agentLastActivity, setAgentLastActivity] = useState<Record<string, number>>({});
   const [chatsVisible, setChatsVisible] = useState<boolean>(loadChatsVisible);
@@ -902,8 +939,101 @@ function ConsoleApp() {
 
   const refreshProcessingAgents = useCallback(() => { const active = new Set<string>(); for (const [key, running] of processingBySessionRef.current) { const id = agentIdFromSessionKey(key); if (running && id) active.add(id); } setProcessingAgentIds(active); }, []);
   const loadAgentActivity = useCallback(async (nextAgents: ApiAgent[]) => { const pages = await Promise.allSettled(nextAgents.map((agent) => api.sessions(agent.id, 0, 200))); const lastActivity: Record<string, number> = {}; pages.forEach((result, index) => { if (result.status !== "fulfilled") return; const id = nextAgents[index]?.id; if (!id) return; for (const [key] of processingBySessionRef.current) if (agentIdFromSessionKey(key) === id) processingBySessionRef.current.delete(key); for (const session of result.value.sessions) { processingBySessionRef.current.set(session.key, session.hasActiveRun); const activity = Math.max(typeof session.lastActivityAt === "number" ? session.lastActivityAt : 0, typeof session.updatedAt === "number" ? session.updatedAt : 0); if (activity > (lastActivity[id] ?? 0)) lastActivity[id] = activity; } }); refreshProcessingAgents(); setAgentLastActivity((current) => { let changed = false; const next = { ...current }; for (const [id, ts] of Object.entries(lastActivity)) { if ((next[id] ?? 0) < ts) { next[id] = ts; changed = true; } } return changed ? next : current; }); }, [refreshProcessingAgents]);
-  const loadNotifications = useCallback(async () => { try { const items = await api.notifications(); setNotifications((current) => { if (current.length === items.length && current.every((item, index) => item.session.key === items[index]?.session.key && item.session.unread === items[index]?.session.unread)) return current; return items; }); } catch { /* o refresh periódico reconcilia quando o Gateway voltar */ } }, []);
-  const markNotificationsRead = useCallback(async (sessionsToMark: Array<{ key: string; agentId: string }>) => { if (!sessionsToMark.length) return; const keys = new Set(sessionsToMark.map((session) => session.key)); setNotifications((current) => current.filter((item) => !keys.has(item.session.key))); await Promise.allSettled(sessionsToMark.map((session) => api.patchSession({ key: session.key, agentId: session.agentId, unread: false }))); }, []);
+  const playNotificationSound = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctx) return;
+      if (!notificationAudioRef.current) notificationAudioRef.current = new Ctx();
+      const ctx = notificationAudioRef.current;
+      if (ctx.state === "suspended") void ctx.resume();
+      const now = ctx.currentTime;
+      const tone = (frequency: number, startOffset: number, duration: number, volume: number) => {
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        const start = now + startOffset;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(volume, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start(start);
+        oscillator.stop(start + duration + 0.05);
+      };
+      // "ding-dong" curto e agradável: A5 seguido de E6
+      tone(880, 0, 0.35, 0.16);
+      tone(1318.5, 0.14, 0.5, 0.13);
+    } catch { /* áudio indisponível */ }
+  }, []);
+  // Adiciona/atualiza uma notificação; toca o som apenas quando é uma notificação NOVA (chave não existia).
+  const pushNotification = useCallback((item: ApiNotification) => {
+    const exists = notificationsRef.current.some((notification) => notification.session.key === item.session.key);
+    setNotifications((current) => {
+      const index = current.findIndex((notification) => notification.session.key === item.session.key);
+      if (index < 0) return [item, ...current];
+      const next = [...current];
+      next[index] = item;
+      return next;
+    });
+    if (!exists) playNotificationSound();
+  }, [playNotificationSound]);
+  // Confirma via API (fonte de verdade) que o agente PAROU de processar e então promove a pendência.
+  // O SSE de sessions.changed não entrega hasActiveRun=false de forma confiável no terminal
+  // (o último broadcast pós-persistência ainda pode chegar com hasActiveRun=true), então
+  // consultamos a API em pequenos intervalos até o run terminar de fato.
+  const promotePendingWhenStopped = useCallback(async (key: string, owner: string) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const pending = pendingNotificationsRef.current.get(key);
+      if (!pending) return; // já promovida, lida ou descartada
+      if (currentSessionKeyRef.current === key) return; // usuário abriu a sessão: não notifica
+      try {
+        const page = await api.sessions(owner, 0, 200);
+        const fresh = page.sessions.find((session) => session.key === key);
+        if (fresh && !fresh.hasActiveRun) {
+          pendingNotificationsRef.current.delete(key);
+          if (fresh.unread && !fresh.archived) {
+            pushNotification(pending);
+          }
+          return;
+        }
+      } catch { /* tenta novamente no próximo intervalo */ }
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+  }, [pushNotification]);
+  // Aquece o AudioContext no primeiro gesto do usuário (autoplay policy) para o som tocar de fato.
+  useEffect(() => {
+    const warm = () => {
+      try {
+        const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!Ctx) return;
+        if (!notificationAudioRef.current) notificationAudioRef.current = new Ctx();
+        if (notificationAudioRef.current.state === "suspended") void notificationAudioRef.current.resume();
+      } catch { /* áudio indisponível */ }
+    };
+    window.addEventListener("pointerdown", warm, { once: true });
+    window.addEventListener("keydown", warm, { once: true });
+    return () => { window.removeEventListener("pointerdown", warm); window.removeEventListener("keydown", warm); };
+  }, []);
+  const loadNotifications = useCallback(async () => {
+    try {
+      const items = await api.notifications();
+      // (d) ignora sessões ainda com run ativo; (c) ignora sessões sem preview de texto real.
+      const visible = items.filter((item) => !item.session.hasActiveRun && Boolean((item.session.lastMessagePreview ?? "").trim()));
+      const firstLoad = !notificationsInitializedRef.current;
+      notificationsInitializedRef.current = true;
+      setNotifications((current) => {
+        if (current.length === visible.length && current.every((item, index) => item.session.key === visible[index]?.session.key && item.session.unread === visible[index]?.session.unread)) return current;
+        return visible;
+      });
+      for (const item of visible) pendingNotificationsRef.current.delete(item.session.key);
+      if (!firstLoad) {
+        const known = new Set(notificationsRef.current.map((item) => item.session.key));
+        for (const item of visible) if (!known.has(item.session.key)) { playNotificationSound(); break; }
+      }
+    } catch { /* o refresh periódico reconcilia quando o Gateway voltar */ }
+  }, [playNotificationSound]);
+  const markNotificationsRead = useCallback(async (sessionsToMark: Array<{ key: string; agentId: string }>) => { if (!sessionsToMark.length) return; const keys = new Set(sessionsToMark.map((session) => session.key)); for (const key of keys) pendingNotificationsRef.current.delete(key); setNotifications((current) => current.filter((item) => !keys.has(item.session.key))); await Promise.allSettled(sessionsToMark.map((session) => api.patchSession({ key: session.key, agentId: session.agentId, unread: false }))); }, []);
   const openNotification = useCallback((session: ApiSession) => { const targetAgentId = sessionAgentId(session) ?? session.agentId; setAgentId(targetAgentId); setSessionKey(session.key); setView("conversations"); setNotificationsAnchor(null); void markNotificationsRead([session]); }, [markNotificationsRead]);
   const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); setAgentId((current) => current && nextAgents.some((a) => a.id === current) ? current : nextAgents[0]?.id ?? ""); void loadAgentActivity(nextAgents); void loadNotifications(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity, loadNotifications]);
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
@@ -931,9 +1061,9 @@ function ConsoleApp() {
   useEffect(() => { const refresh = () => { if (document.visibilityState === "visible") void loadNotifications(); }; const timer = window.setInterval(refresh, 60_000); document.addEventListener("visibilitychange", refresh); window.addEventListener("focus", refresh); return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); window.removeEventListener("focus", refresh); }; }, [loadNotifications]);
   const recoverGatewayStatus = useCallback(() => { if (statusProbeRef.current) return statusProbeRef.current; const probe = (async () => { try { const nextStatus = await api.status(); const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) await loadRoot(); return nextStatus.connected; } catch { gatewayConnectedRef.current = false; return false; } finally { statusProbeRef.current = undefined; } })(); statusProbeRef.current = probe; return probe; }, [loadRoot]);
   useEffect(() => { let cancelled = false; let timer: ReturnType<typeof setTimeout> | undefined; const probe = async () => { const online = await recoverGatewayStatus(); if (!cancelled) timer = setTimeout(() => void probe(), online ? 30_000 : 4_000); }; timer = setTimeout(() => void probe(), 4_000); const wake = () => { if (document.visibilityState === "visible") void recoverGatewayStatus(); }; window.addEventListener("online", wake); document.addEventListener("visibilitychange", wake); return () => { cancelled = true; if (timer) clearTimeout(timer); window.removeEventListener("online", wake); document.removeEventListener("visibilitychange", wake); }; }, [recoverGatewayStatus]);
-  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; setNotifications((current) => { if (currentSessionKeyRef.current === key) return current.filter((item) => item.session.key !== key); const index = current.findIndex((item) => item.session.key === key); if (event.session!.unread && !event.session!.archived) { const agent = agentsRef.current.find((a) => a.id === event.session!.agentId); const item = { session: event.session!, agent: agent ?? { id: event.session!.agentId, name: event.session!.agentId, isDefault: false, status: "unknown" as const } }; if (index < 0) return [item, ...current]; const next = [...current]; next[index] = item; return next; } return current.filter((item) => item.session.key !== key); }); processingBySessionRef.current.set(key, event.session.hasActiveRun); refreshProcessingAgents(); const sessionActivity = Math.max(typeof event.session.lastActivityAt === "number" ? event.session.lastActivityAt : 0, typeof event.session.updatedAt === "number" ? event.session.updatedAt : 0); if (sessionActivity > 0) { const activityAgentId = event.session.agentId; setAgentLastActivity((current) => (current[activityAgentId] ?? 0) < sessionActivity ? { ...current, [activityAgentId]: sessionActivity } : current); } if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); const chatOwner = agentIdFromSessionKey(event.sessionKey, event.agentId ?? agentId) ?? agentId; if (chatOwner) setAgentLastActivity((current) => (current[chatOwner] ?? 0) < Date.now() ? { ...current, [chatOwner]: Date.now() } : current); if (event.sessionKey !== sessionKey) { if (isTerminal) { const owner = agentIdFromSessionKey(event.sessionKey, event.agentId ?? agentId) ?? agentId; setNotifications((current) => { if (current.some((item) => item.session.key === event.sessionKey)) return current; const agent = agentsRef.current.find((a) => a.id === owner); const session: ApiSession = { key: event.sessionKey, agentId: owner, title: event.sessionKey, state: "idle", archived: false, pinned: false, unread: true, hasActiveRun: false, lastActivityAt: Date.now(), updatedAt: Date.now(), ...(event.message?.content ? { lastMessagePreview: event.message.content } : {}) }; return [{ session, agent: agent ?? { id: owner, name: owner, isDefault: false, status: "unknown" as const } }, ...current]; }); } return; } if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
+  useEffect(() => api.events({ onOpen: () => { void recoverGatewayStatus(); }, onError: () => { void recoverGatewayStatus(); }, onStatus: (nextStatus) => { const reconnected = !gatewayConnectedRef.current && nextStatus.connected; gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (reconnected) void loadRoot(); }, onSessions: (event) => { const key = event.sessionKey ?? event.session?.key; if (!key) return; if (event.reason === "delete") { pendingNotificationsRef.current.delete(key); setSessions((current) => current.filter((session) => session.key !== key)); processingBySessionRef.current.delete(key); refreshProcessingAgents(); if (currentSessionKeyRef.current === key) { setSessionKey(""); void loadSessions(agentId); } return; } if (!event.session) return; const session = event.session; if (session.hasActiveRun) { /* agente (ainda) processando: esconde a notificação visível, mas NÃO descarta a pendência — o broadcast pós-persistência do Gateway pode chegar com hasActiveRun=true mesmo após o final; a promoção é confirmada via API (promotePendingWhenStopped) */ setNotifications((current) => current.filter((item) => item.session.key !== key)); } else if (session.unread && !session.archived && currentSessionKeyRef.current !== key) { /* (a)(c)(d) parou, não lida, sessão não aberta: promove a pendência (texto final real) ou cria com preview do servidor */ const pending = pendingNotificationsRef.current.get(key); pendingNotificationsRef.current.delete(key); if (pending) { pushNotification(pending); } else { const preview = (session.lastMessagePreview ?? "").trim(); if (preview) { const agent = agentsRef.current.find((a) => a.id === session.agentId); pushNotification({ session: { ...session, unread: true }, agent: agent ?? { id: session.agentId, name: session.agentId, isDefault: false, status: "unknown" as const } }); } } } else { pendingNotificationsRef.current.delete(key); setNotifications((current) => current.filter((item) => item.session.key !== key)); } processingBySessionRef.current.set(key, session.hasActiveRun); refreshProcessingAgents(); const sessionActivity = Math.max(typeof event.session.lastActivityAt === "number" ? event.session.lastActivityAt : 0, typeof event.session.updatedAt === "number" ? event.session.updatedAt : 0); if (sessionActivity > 0) { const activityAgentId = event.session.agentId; setAgentLastActivity((current) => (current[activityAgentId] ?? 0) < sessionActivity ? { ...current, [activityAgentId]: sessionActivity } : current); } if (event.session.agentId !== agentId) return; setSessions((current) => { const index = current.findIndex((session) => session.key === key); if (index < 0) return [event.session!, ...current]; const next = [...current]; next[index] = { ...current[index], ...event.session! }; return next; }); if (currentSessionKeyRef.current === key) setProcessing(event.session.hasActiveRun); }, onChat: (event) => { const isTerminal = event.state === "final" || event.state === "aborted" || event.state === "error"; setSessionProcessing(event.sessionKey, !isTerminal); const chatOwner = agentIdFromSessionKey(event.sessionKey, event.agentId ?? agentId) ?? agentId; if (chatOwner) setAgentLastActivity((current) => (current[chatOwner] ?? 0) < Date.now() ? { ...current, [chatOwner]: Date.now() } : current); if (event.sessionKey !== sessionKey) { if (event.state === "final") { /* (c) só mensagem de texto real do assistant (exclui tool/thinking/system/comando) */ const message = event.message; const content = message && message.role === "assistant" ? (message.content ?? "").trim() : ""; if (content) { const owner = agentIdFromSessionKey(event.sessionKey, event.agentId ?? agentId) ?? agentId; const agent = agentsRef.current.find((a) => a.id === owner); const session: ApiSession = { key: event.sessionKey, agentId: owner, title: event.sessionKey, state: "idle", archived: false, pinned: false, unread: true, hasActiveRun: false, lastActivityAt: Date.now(), updatedAt: Date.now(), lastMessagePreview: content }; /* (d) só exibe quando o Gateway confirmar hasActiveRun=false (verificação via API em promotePendingWhenStopped) */ pendingNotificationsRef.current.set(event.sessionKey, { session, agent: agent ?? { id: owner, name: owner, isDefault: false, status: "unknown" as const } }); void promotePendingWhenStopped(event.sessionKey, owner); } } return; } if (event.state === "delta") { setProcessing(true); const nextText = event.replace ? event.deltaText ?? "" : (terminalTextRef.current ?? "") + (event.deltaText ?? ""); terminalTextRef.current = nextText; setStreamText(nextText); }
     if (isTerminal) { const owner = agentIdFromSessionKey(sessionKey, event.agentId ?? agentId) ?? agentId; setProcessing(false); setRunId(undefined); if (event.state === "final" && terminalTextRef.current) tts.speak(terminalTextRef.current); void markNotificationsRead([{ key: sessionKey, agentId: owner }]); void Promise.all([loadHistory(sessionKey, owner), refreshSessionMetadata(sessionKey, owner)]).catch(() => { setStreamText(""); terminalTextRef.current = undefined; }); window.setTimeout(() => void refreshSessionMetadata(sessionKey, owner), 800); if ("errorMessage" in event && event.errorMessage) setError(event.errorMessage); }
-  } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing, markNotificationsRead]);
+  } }), [sessionKey, agentId, loadHistory, loadRoot, loadSessions, recoverGatewayStatus, refreshProcessingAgents, refreshSessionMetadata, setSessionProcessing, markNotificationsRead, pushNotification, promotePendingWhenStopped]);
   useEffect(() => { if (!processing || !sessionKey || !selectedSessionAgentId) return; let cancelled = false; let inactiveChecks = 0; let timer: ReturnType<typeof setTimeout> | undefined; const reconcile = async () => { try { const page = await api.sessions(selectedSessionAgentId, 0, 200); const current = page.sessions.find((session) => session.key === sessionKey); if (current?.hasActiveRun) inactiveChecks = 0; else if (current && ++inactiveChecks >= 2) { cancelled = true; setSessionProcessing(sessionKey, false); if (currentSessionKeyRef.current === sessionKey) { setProcessing(false); setRunId(undefined); await Promise.all([loadHistory(sessionKey, selectedSessionAgentId), refreshSessionMetadata(sessionKey, selectedSessionAgentId)]); } } } catch { /* SSE remains authoritative while reconciliation is unavailable. */ } finally { if (!cancelled) timer = setTimeout(() => void reconcile(), 5_000); } }; timer = setTimeout(() => void reconcile(), 4_000); return () => { cancelled = true; if (timer) clearTimeout(timer); }; }, [processing, sessionKey, selectedSessionAgentId, loadHistory, refreshSessionMetadata, setSessionProcessing]);
   const loadMoreSessions = useCallback(() => { if (agentId && sessionsHasMore && !sessionsLoading && !sessionsLoadingMore) void loadSessions(agentId, sessionsNextOffset, true); }, [agentId, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset, loadSessions]);
   const send = async (message: string) => { if (!selectedAgent || !selectedSession) return; const targetSessionKey = selectedSession.key; const targetAgentId = sessionAgentId(selectedSession); const trimmedMessage = message.trim(); if (/^\/model(?:\s|$)/i.test(trimmedMessage)) { const ref = trimmedMessage.replace(/^\/model\s*/i, "").trim(); const targetModel = models.find((model) => `${model.provider}/${model.id}` === ref || model.alias === ref || model.name === ref); const blockedReason = modelSwitchBlockReason(targetModel, selectedSession); if (blockedReason) { setError(blockedReason); return; } } const wasAutoNamed = /^Chat \d+$/i.test(selectedSession.label ?? selectedSession.title ?? ""); const optimistic = { id: clientId(), role: "user" as const, author: "Alexandre", timestamp: Date.now(), content: message }; optimisticMessagesRef.current.set(targetSessionKey, [...(optimisticMessagesRef.current.get(targetSessionKey) ?? []), optimistic]); terminalTextRef.current = undefined; flushSync(() => { setError(""); setSessionProcessing(targetSessionKey, true); setProcessing(true); setMessages((current) => [...current, optimistic]); }); try { const result = await api.send({ sessionKey: targetSessionKey, agentId: targetAgentId, sessionId, message }); if (currentSessionKeyRef.current === targetSessionKey && processingBySessionRef.current.get(targetSessionKey)) setRunId(result.runId); if (/^\/model(?:\s|$)/i.test(message.trim())) { window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 300); window.setTimeout(() => void refreshSessionMetadata(targetSessionKey, targetAgentId), 1_200); } else if (wasAutoNamed && !/^\/(?:model|new|fork|abort)/i.test(message.trim())) { const suggested = suggestSessionName(message); if (suggested && suggested !== (selectedSession.label ?? selectedSession.title)) { try { await api.patchSession({ key: targetSessionKey, agentId: targetAgentId, label: suggested }); setSessions((current) => current.map((item) => item.key === targetSessionKey ? { ...item, label: suggested, title: suggested } : item)); } catch { /* renomeio não crítico */ } } } } catch (e) { optimisticMessagesRef.current.set(targetSessionKey, (optimisticMessagesRef.current.get(targetSessionKey) ?? []).filter((item) => item.id !== optimistic.id)); setSessionProcessing(targetSessionKey, false); if (currentSessionKeyRef.current === targetSessionKey) { setProcessing(false); setRunId(undefined); setError(e instanceof Error ? e.message : String(e)); await loadHistory(targetSessionKey, targetAgentId); } } };
@@ -1012,6 +1142,7 @@ function ConsoleApp() {
           onSend={groupState.handleSendMessage}
           onManageAgents={() => groupState.setManageDialogOpen(true)}
           sendingToAgents={groupState.sendingToAgents}
+          micEnabled={micEnabled}
         />
       ) : (
         <Box className="agent-empty">
@@ -1048,7 +1179,7 @@ function ConsoleApp() {
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} micEnabled={micEnabled} onToggleMic={toggleMic} />
           </>
         ) : (
           <>
@@ -1058,7 +1189,7 @@ function ConsoleApp() {
             {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} /> : <Box className="chats-panel-placeholder" />}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} micEnabled={micEnabled} onToggleMic={toggleMic} />
           </>
         )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />

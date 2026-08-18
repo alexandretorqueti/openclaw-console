@@ -406,6 +406,7 @@ export function GroupChatPane({
   onSend,
   onManageAgents,
   sendingToAgents,
+  micEnabled = true,
 }: {
   group: AgentGroup;
   agents: ApiAgent[];
@@ -413,6 +414,7 @@ export function GroupChatPane({
   onSend: (content: string) => void;
   onManageAgents: () => void;
   sendingToAgents: Set<string>;
+  micEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -460,12 +462,18 @@ export function GroupChatPane({
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+  // Mic desativado no topo da página: interrompe o ditado em andamento imediatamente.
+  useEffect(() => {
+    if (!micEnabled && recognitionRef.current) recognitionRef.current.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micEnabled]);
 
   const toggleListening = () => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       return;
     }
+    if (!micEnabled) return;
     const Ctor = speechRecognitionCtor();
     if (!Ctor) return;
     const recognition = new Ctor();
@@ -722,7 +730,7 @@ export function GroupChatPane({
               </Select>
             </Box>
             <Box className="composer-toolbar-right">
-              <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
+              {micEnabled && <Tooltip title={!speechRecognitionSupported() ? "Ditado por voz não suportado neste navegador (use Chrome/Edge/Safari)" : listening ? "Parar ditado" : "Ditar por voz (a fala vira texto no campo)"}>
                 <span>
                   <IconButton
                     type="button"
@@ -734,7 +742,7 @@ export function GroupChatPane({
                     {listening ? <StopCircleRounded /> : <MicRounded />}
                   </IconButton>
                 </span>
-              </Tooltip>
+              </Tooltip>}
               <Tooltip title={isProcessing ? `Aguardando ${processingAgents.map((a) => a.name).join(", ")} terminar` : ""}>
                 <span>
                   <IconButton
