@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeHistory, normalizeSessions } from "./normalizers.js";
+import { normalizeChatEvent, normalizeHistory, normalizeSessions } from "./normalizers.js";
 
 test("derives context percentage and keeps each session model independent", () => {
   const result = normalizeSessions({ sessions: [
@@ -52,4 +52,46 @@ test("new sessions start with zero context instead of an unknown percentage", ()
 test("session key is authoritative for the owning agent", () => {
   const result = normalizeSessions({ sessions: [{ key: "agent:programador-senior:subagent:abc", agentId: "main" }] });
   assert.equal(result.sessions[0]?.agentId, "programador-senior");
+});
+
+test("SSE chat events preserve the run lifecycle fields required by the motor", () => {
+  const final = normalizeChatEvent({
+    type: "event",
+    event: "chat",
+    seq: 12,
+    payload: {
+      state: "final",
+      runId: "run-final",
+      sessionKey: "agent:main:motor",
+      stopReason: "completed",
+      message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    },
+  });
+  assert.equal(final?.state, "final");
+  assert.deepEqual(final && final.state === "final" && { state: final.state, runId: final.runId, sessionKey: final.sessionKey, stopReason: final.stopReason }, {
+    state: "final",
+    runId: "run-final",
+    sessionKey: "agent:main:motor",
+    stopReason: "completed",
+  });
+
+  const error = normalizeChatEvent({
+    type: "event",
+    event: "chat",
+    payload: {
+      state: "error",
+      runId: "run-error",
+      sessionKey: "agent:main:motor",
+      stopReason: "failed",
+      errorMessage: "model unavailable",
+    },
+  });
+  assert.equal(error?.state, "error");
+  assert.deepEqual(error && error.state === "error" && { state: error.state, runId: error.runId, sessionKey: error.sessionKey, stopReason: error.stopReason, errorMessage: error.errorMessage }, {
+    state: "error",
+    runId: "run-error",
+    sessionKey: "agent:main:motor",
+    stopReason: "failed",
+    errorMessage: "model unavailable",
+  });
 });

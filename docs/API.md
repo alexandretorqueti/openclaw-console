@@ -54,8 +54,11 @@ O BFF extrai o agente da session key para operações sobre sessões existentes.
 | `GET` | `/api/chat/history` | `ChatHistoryQuerySchema` → `ChatHistoryResponseSchema` |
 | `POST` | `/api/chat/send` | `ChatSendRequestSchema` → `ChatSendResponseSchema` |
 | `POST` | `/api/chat/abort` | `ChatAbortRequestSchema` → `ChatAbortResponseSchema` |
+| `GET` | `/api/sessions/describe?key=...` | `SessionsDescribeQuerySchema` → gateway passthrough |
 
-`chat.send` recebe uma idempotency key gerada pelo servidor. Comandos como `/model` continuam sendo enviados como mensagens normais; o frontend atualiza os metadados da sessão após o comando.
+`chat.send` aceita `idempotencyKey` opcional. Quando omitida, o BFF gera uma UUID; quando fornecida, ela é encaminhada ao gateway para que retries do motor não dupliquem a execução. Comandos como `/model` continuam sendo enviados como mensagens normais; o frontend atualiza os metadados da sessão após o comando.
+
+`sessions.describe` encaminha a consulta ao gateway e devolve os campos de atividade (`status`, `startedAt`, `endedAt`) junto com os campos adicionais disponíveis, sem normalização destrutiva.
 
 ## Eventos SSE
 
