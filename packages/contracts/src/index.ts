@@ -319,6 +319,9 @@ export const ChatSendRequestSchema = z
     fastMode: z.union([z.boolean(), z.literal("auto")]).optional(),
     timeoutMs: z.number().int().min(0).max(3_600_000).optional(),
     attachments: z.array(z.unknown()).max(20).optional(),
+    // Idempotency key supplied by the caller (the motor kernel generates its own UUID
+    // for retries). Optional: when absent the BFF generates one server-side.
+    idempotencyKey: z.string().trim().min(1).max(128).optional(),
   })
   .strict();
 export type ChatSendRequest = z.infer<typeof ChatSendRequestSchema>;
@@ -419,6 +422,27 @@ export const DeleteSessionResponseSchema = z.object({
 }).strict();
 export type DeleteSessionResponse = z.infer<typeof DeleteSessionResponseSchema>;
 
+export const SessionsDescribeQuerySchema = z
+  .object({
+    key: NonEmptyStringSchema,
+    agentId: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type SessionsDescribeQuery = z.infer<typeof SessionsDescribeQuerySchema>;
+
+// Passthrough by design: the motor's runtime loader consumes `status` plus
+// `startedAt`/`endedAt` (epoch ms) and relies on *absence* — never `null` — to
+// detect activity. Extra gateway fields are preserved untouched.
+export const SessionsDescribeResponseSchema = z
+  .object({
+    key: NonEmptyStringSchema,
+    status: z.string().optional(),
+    startedAt: z.number().optional(),
+    endedAt: z.number().optional(),
+  })
+  .passthrough();
+export type SessionsDescribeResponse = z.infer<typeof SessionsDescribeResponseSchema>;
+
 export const SessionChangedEventSchema = z.object({
   sessionKey: NonEmptyStringSchema.optional(),
   agentId: z.string().optional(),
@@ -451,3 +475,5 @@ export const BffPatchSessionRequestSchema = PatchSessionRequestSchema;
 export const BffDeleteSessionRequestSchema = DeleteSessionRequestSchema;
 export const BffDeleteSessionResponseSchema = DeleteSessionResponseSchema;
 export const BffSessionMutationResponseSchema = SessionMutationResponseSchema;
+export const BffSessionsDescribeQuerySchema = SessionsDescribeQuerySchema;
+export const BffSessionsDescribeResponseSchema = SessionsDescribeResponseSchema;

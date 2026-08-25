@@ -198,15 +198,15 @@ function isSubSession(session: ApiSession): boolean { return Boolean(session.par
 // Estado de colapso das seções da lista de conversas, persistido localmente.
 // `true` = seção minimizada. `subagents` nasce minimizada por padrão.
 const chatSectionsStorageKey = "openclaw-console-chat-sections";
-type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean; subagents: boolean };
+type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean; subagents: boolean; tasks: boolean };
 function loadChatSectionsState(): ChatSectionsState {
   try {
     const raw = localStorage.getItem(chatSectionsStorageKey);
-    if (!raw) return { chats: false, groups: false, hidden: true, subagents: true };
+    if (!raw) return { chats: false, groups: false, hidden: true, subagents: true, tasks: false };
     const parsed = JSON.parse(raw) as Partial<ChatSectionsState>;
-    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false, subagents: parsed.subagents !== false };
+    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false, subagents: parsed.subagents !== false, tasks: parsed.tasks === true };
   } catch {
-    return { chats: false, groups: false, hidden: true, subagents: true };
+    return { chats: false, groups: false, hidden: true, subagents: true, tasks: false };
   }
 }
 
@@ -235,7 +235,7 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
   const toggleSection = (section: keyof ChatSectionsState) => setSectionsCollapsed((current) => { const next = { ...current, [section]: !current[section] }; try { localStorage.setItem(chatSectionsStorageKey, JSON.stringify(next)); } catch { /* armazenamento indisponível */ } return next; });
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
-  const isTask = (s: any) => { const n = s.label ?? s.title ?? s.key; return typeof n === 'string' && (n.startsWith('dev-') || n.startsWith('analysis-')); };
+  const isTask = (s: any) => { const n = s.label ?? s.title ?? s.key; return typeof n === 'string' && (n.startsWith('dev-') || n.startsWith('analysis-') || n.startsWith('[TAREFA]')); };
   const taskSessions = sessions.filter((session) => isTask(session) && !session.archived);
   const chatSessions = sessions.filter((session) => !isGroupSession(session) && !isSubSession(session) && !isTask(session) && !session.archived);
   const groupSessions = sessions.filter((session) => isGroupSession(session) && !session.archived);
@@ -257,13 +257,13 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, selected
     </Select>
     <Button className="new-chat-button" startIcon={<AddRounded />} disabled={!selectedAgent} onClick={onCreate}>Novo chat</Button>
     {loading && <LinearProgress className="chats-loading-progress" />}
-    <ChatSection title="Tarefas" count={taskSessions.length} collapsed={(sectionsCollapsed as any).tasks} onToggle={() => toggleSection('tasks' as any)}>
-      {taskSessions.map(renderSessionItem)}
-      {!loading && !taskSessions.length && <Box className="chat-empty">Nenhuma tarefa.</Box>}
-    </ChatSection>
     <ChatSection title="Chats" count={chatSessions.length} collapsed={sectionsCollapsed.chats} onToggle={() => toggleSection("chats")}>
       {chatSessions.map(renderSessionItem)}
       {!loading && !chatSessions.length && <Box className="chat-empty">Nenhum chat 1:1 deste agente.</Box>}
+    </ChatSection>
+    <ChatSection title="Tarefas" count={taskSessions.length} collapsed={sectionsCollapsed.tasks} onToggle={() => toggleSection('tasks' as any)}>
+      {taskSessions.map(renderSessionItem)}
+      {!loading && !taskSessions.length && <Box className="chat-empty">Nenhuma tarefa.</Box>}
     </ChatSection>
     <ChatSection title="Grupos" count={groupSessions.length} collapsed={sectionsCollapsed.groups} onToggle={() => toggleSection("groups")}>
       {groupSessions.map(renderSessionItem)}

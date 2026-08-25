@@ -26,6 +26,8 @@ import {
   UpdateAgentContextFilesRequestSchema,
   UpdateAgentContextFilesResponseSchema,
   SessionsQuerySchema,
+  SessionsDescribeQuerySchema,
+  SessionsDescribeResponseSchema,
   SessionsResponseSchema,
   type AgentsResponse,
   type AgentMutationResponse,
@@ -53,6 +55,8 @@ import {
   type UpdateAgentContextFilesRequest,
   type UpdateAgentContextFilesResponse,
   type SessionsQuery,
+  type SessionsDescribeQuery,
+  type SessionsDescribeResponse,
   type SessionsResponse,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import type { ZodTypeAny } from "zod";
@@ -203,6 +207,11 @@ export class OpenClawConsoleClient {
       DeleteSessionRequestSchema.parse(request),
       DeleteSessionResponseSchema,
     );
+  }
+
+  describeSession(query: SessionsDescribeQuery): Promise<SessionsDescribeResponse> {
+    const parsed = SessionsDescribeQuerySchema.parse(query);
+    return this.get<SessionsDescribeResponse>(`/sessions/describe?${toQueryString(parsed)}`, SessionsDescribeResponseSchema);
   }
 
   subscribeEvents(handlers: ConsoleEventHandlers): () => void {

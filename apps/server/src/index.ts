@@ -10,7 +10,7 @@ import {
   CreateAgentRequestSchema, DeleteAgentRequestSchema, DeleteSessionRequestSchema, ForkSessionRequestSchema, GatewayStatusSchema, PatchSessionRequestSchema,
   ModelsResponseSchema,
   NotificationItemSchema, NotificationsResponseSchema,
-  SessionChangedEventSchema, SessionsQuerySchema,
+  SessionChangedEventSchema, SessionsDescribeQuerySchema, SessionsQuerySchema,
   UpdateAgentContextFilesRequestSchema, UpdateAgentContextFilesResponseSchema, UpdateAgentRequestSchema,
   type GatewayStatus,
 } from "@alexandretorqueti/openclaw-console-contracts";
@@ -183,7 +183,7 @@ async function ollamaModelSizes() {
 app.setErrorHandler((error, _request, reply) => {
   if (error instanceof ZodError) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "Invalid request", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) } });
   const code = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : "INTERNAL_ERROR";
-  const http = code === "UNAVAILABLE" ? 503 : code === "TIMEOUT" ? 504 : 500;
+  const http = code === "UNAVAILABLE" ? 503 : code === "TIMEOUT" ? 504 : code === "NOT_FOUND" ? 404 : 500;
   app.log.error({ err: error, code }, "request failed");
   return reply.code(http).send({ error: { code, message: error instanceof Error ? error.message : String(error) } });
 });
@@ -303,7 +303,7 @@ app.get("/api/chat/history", async (request) => {
 });
 app.post("/api/chat/send", async (request) => {
   const body = parse(ChatSendRequestSchema, request.body);
-  const payload = record(await rpc("chat.send", { ...body, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: randomUUID() }));
+  const payload = record(await rpc("chat.send", { ...body, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: body.idempotencyKey ?? randomUUID() }));
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   if (!runId) throw new Error("Gateway did not return a runId");
   return { runId, ...(typeof payload.status === "string" ? { status: payload.status } : {}) };
@@ -317,6 +317,36 @@ app.post("/api/chat/abort", async (request) => {
 app.post("/api/sessions", async (request) => { const body = parse(CreateSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", body), body.key); });
 app.post("/api/sessions/fork", async (request) => { const body = parse(ForkSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", { ...body, agentId: canonicalAgentId(body.parentSessionKey, body.agentId), fork: true }), body.key); });
 app.patch("/api/sessions", async (request) => { const body = parse(PatchSessionRequestSchema, request.body); return mutation(await rpc("sessions.patch", { ...body, agentId: canonicalAgentId(body.key, body.agentId) }), body.key); });
+app.get("/api/sessions/describe", async (request) => {
+  const query = parse(SessionsDescribeQuerySchema, request.query);
+  // Nota: o gateway rejeita `agentId` em sessions.describe ("unexpected property");
+  // a chave já codifica o agente. `agentId` fica no contrato p/ compatibilidade,
+  // mas não é repassado ao RPC.
+  const payload = record(await rpc("sessions.describe", { key: query.key }));
+  let session = payload.session !== null && payload.session !== undefined && typeof payload.session === "object" && !Array.isArray(payload.session)
+    ? record(payload.session)
+    : undefined;
+  // Fallback: o gateway pode devolver session:null no describe (resolução de store
+  // por agente) enquanto o sessions.list (store combinado) enxerga a sessão.
+  // A linha do list contém os mesmos campos (status/startedAt/endedAt/hasActiveRun).
+  // Nota: usar configuredAgentsOnly — sem ele a listagem degradada não contém a sessão.
+  if (!session) {
+    const list = record(await rpc("sessions.list", { limit: 200, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true }));
+    const rows = Array.isArray(list.sessions) ? list.sessions : [];
+    const match = rows.find((row) => record(row).key === query.key);
+    if (match !== undefined) session = record(match);
+  }
+  if (!session) {
+    throw Object.assign(new Error(`Session not found: ${query.key}`), { code: "NOT_FOUND" });
+  }
+  // Passthrough: campos achatados no topo, null/undefined normalizados para
+  // ausente. O loader do motor lê startedAt/endedAt numéricos e trata ausência
+  // como "sem valor" — um null quebraria a detecção de atividade.
+  const body: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(session)) if (value !== null && value !== undefined) body[field] = value;
+  if (typeof body.key !== "string" || body.key.length === 0) body.key = query.key;
+  return body;
+});
 app.delete("/api/sessions", async (request) => {
   const body = parse(DeleteSessionRequestSchema, request.body);
   const agentId = canonicalAgentId(body.key, body.agentId);
