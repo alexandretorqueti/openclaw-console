@@ -123,6 +123,7 @@ button, input, textarea { font: inherit; }
 .message-meta { display: block; color: #848ca7 !important; margin-top: 10px !important; }
 .system-message { display: flex; align-items: center; justify-content: center; gap: 9px; margin: 2px auto 25px; color: #7d86a1; }
 .system-message > svg { font-size: 17px; }.system-message > div { display: flex; flex-direction: column; align-items: center; }
+.system-message.error { color: #d32f2f; background: rgba(211, 47, 47, 0.08); border-radius: 8px; padding: 8px 16px; margin: 8px auto 25px; }
 .technical-activity { width: min(650px, calc(100% - 45px)); margin: 0 0 20px 45px; border: 1px solid rgba(130, 141, 177, .12); border-radius: 12px; background: rgba(34, 40, 61, .34); color: inherit; }
 .technical-activity.has-error { border-color: rgba(229, 91, 91, .3); }
 .technical-activity > summary { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 11px; cursor: pointer; list-style: none; user-select: none; }
