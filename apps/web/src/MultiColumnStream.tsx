@@ -147,6 +147,7 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
     const prevLayoutRef = useRef<ColumnLayout | null>(null);
     const stickRef = useRef(true);
     const scrollTopRef = useRef(0);
+    const scrollHeightRef = useRef(0);
     const [showJump, setShowJump] = useState(false);
     const rafRef = useRef(0);
 
@@ -169,7 +170,12 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
         setHeight(0);
         return;
       }
-      const update = () => setHeight(el.clientHeight);
+      const update = () => {
+        scrollHeightRef.current = el.scrollHeight;
+        scrollTopRef.current = el.scrollTop;
+        setScrollTop(el.scrollTop);
+        setHeight(el.clientHeight);
+      };
       update();
       const ro = new ResizeObserver(update);
       ro.observe(el);
@@ -290,6 +296,7 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
         rafRef.current = 0;
         const max = el.scrollHeight - el.clientHeight;
         const s = Math.min(Math.max(0, el.scrollTop), Math.max(0, max));
+        scrollHeightRef.current = el.scrollHeight;
         scrollTopRef.current = s;
         setScrollTop(s);
         const atBottom = max - s < NEAR_BOTTOM_PX;
@@ -308,8 +315,14 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
       if (loading) return;
       const el = scrollRef.current;
       if (!el) return;
+      // Durante o streaming, a altura muda em vários frames. Se um evento de
+      // scroll intermediário marcou o stream como "fora do fim", recupera a
+      // intenção original quando a posição anterior ainda estava no rodapé.
+      const previousMax = Math.max(0, scrollHeightRef.current - el.clientHeight);
+      if (previousMax - scrollTopRef.current < NEAR_BOTTOM_PX) stickRef.current = true;
       if (stickRef.current || signalChanged) el.scrollTop = el.scrollHeight;
       const next = Math.min(Math.max(0, el.scrollTop), Math.max(0, el.scrollHeight - el.clientHeight));
+      scrollHeightRef.current = el.scrollHeight;
       if (next !== scrollTopRef.current) {
         scrollTopRef.current = next;
         setScrollTop(next);
@@ -346,7 +359,15 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
     }, [combined, heights, gap]);
     const total = entries.length ? entries[entries.length - 1].top + entries[entries.length - 1].h + gap : 0;
     const H = height || 1;
-    const maxScroll = Math.max(0, total - H);
+    // Em uma coluna o composer também fica sobreposto ao stream, mas a
+    // corrente ainda precisa poder rolar até acima dele. Sem esse respiro,
+    // o scroll chegava ao fim de `total` enquanto a última mensagem ainda
+    // ficava escondida atrás da caixa de texto.
+    const firstColumnHeight = Math.max(H - composerHeight - COMPOSER_GAP_PX, 64);
+    const scrollableHeight = columns === 1
+      ? total + Math.max(0, H - firstColumnHeight)
+      : total;
+    const maxScroll = Math.max(0, scrollableHeight - H);
     const S = Math.min(Math.max(0, scrollTop), maxScroll);
 
     return (
@@ -363,13 +384,13 @@ export const MultiColumnStream = forwardRef<MultiColumnStreamHandle, MultiColumn
           <Box className="stream-empty">{empty}</Box>
         ) : (
           <Box className="stream-scroll" ref={setScrollRef} onScroll={handleScroll}>
-            <Box className="stream-content" style={{ height: total }}>
+            <Box className="stream-content" style={{ height: scrollableHeight }}>
               {layout.width > 0 && height > 0 && (
                 <Box className="stream-viewport" style={{ height: H, paddingInline: padX }}>
                   {(() => {
                     // Alturas por coluna: a 1ª termina acima da caixa de texto
                     // (col0H = H − composerHeight − respiro); as demais vão até a base (H).
-                    const col0H = Math.max(H - composerHeight - COMPOSER_GAP_PX, 64);
+                    const col0H = firstColumnHeight;
                     const sliceStartFor = (k: number) => (k === 0 ? S : S + col0H + (k - 1) * H);
                     const colHFor = (k: number) => (k === 0 ? col0H : H);
                     // Colunas com conteúdo na fatia atual; se nenhuma tiver,

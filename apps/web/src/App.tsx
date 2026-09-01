@@ -822,6 +822,27 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       const modifier = event.ctrlKey || event.metaKey;
       const composing = event.nativeEvent.isComposing;
       const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
+
+      // No modo "Enter envia", aguarda um instante antes de enviar. Isso dá
+      // ao usuário uma janela para começar a digitar e cancelar o envio.
+      if (sendShortcut === "enter" && !modifier && !event.shiftKey) {
+        event.preventDefault();
+        clearEnterDebounce();
+        // Como o envio é adiado, reproduzimos aqui o comportamento padrão do
+        // textarea: o Enter ainda insere uma quebra de linha.
+        const nextDraft = `${draftRef.current}\n`;
+        draftRef.current = nextDraft;
+        setDraft(nextDraft);
+        onDraftChange(nextDraft);
+        if (!busyRef.current && !loading) {
+          enterDebounceRef.current = setTimeout(() => {
+            enterDebounceRef.current = undefined;
+            void submitDraft();
+          }, 1000);
+        }
+        return;
+      }
+
       if (isSendCombination) {
         clearEnterDebounce();
         if (busyRef.current || loading || composing) return; // compono/ocupado: não envia
@@ -832,9 +853,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       // Enter de quebra de linha (Shift+Enter sempre, ou Enter no modo ctrl-enter):
       // arma o debounce mesmo durante composição — o delay de 1s é justamente para
       // deixar o usuário seguir digitando (ou o IME confirmar) sem enviar por engano.
-      if (busyRef.current || loading) { clearEnterDebounce(); return; }
+      if (sendShortcut === "enter" || busyRef.current || loading) { clearEnterDebounce(); return; }
       clearEnterDebounce();
-      enterDebounceRef.current = setTimeout(() => { enterDebounceRef.current = undefined; void submitDraft(); }, 1000);
+      if (draftRef.current.trim()) {
+        enterDebounceRef.current = setTimeout(() => { enterDebounceRef.current = undefined; void submitDraft(); }, 1000);
+      }
     }} />
       <Box className="composer-toolbar">
         <Box className="composer-toolbar-left">

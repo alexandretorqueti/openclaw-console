@@ -1,7 +1,7 @@
 import { OpenClawConsoleClient } from "@alexandretorqueti/openclaw-console-client";
 import { API_BASE_URL, getStoredToken } from "./auth";
 import type {
-  Agent, AgentContextFile, ChatEvent as ContractChatEvent, ChatMessage, GatewayStatus as ContractGatewayStatus, ModelChoice, NotificationItem, PatchSessionRequest, Session, SessionChangedEvent,
+  Agent, AgentContextFile, ChatEvent as ContractChatEvent, ChatMessage, GatewayStatus as ContractGatewayStatus, ModelChoice, NotificationItem, PatchSessionRequest, Session, SessionChangedEvent, SessionSummary,
 } from "@alexandretorqueti/openclaw-console-contracts";
 
 export type GatewayStatus = ContractGatewayStatus & { serverVersion?: string };
@@ -11,6 +11,7 @@ export type ApiMessage = Omit<ChatMessage, "createdAt"> & { timestamp?: number }
 export type ApiNotification = NotificationItem;
 export type ApiModel = ModelChoice;
 export type ApiAgentContextFile = AgentContextFile;
+export type ApiSessionSummary = SessionSummary;
 export type ChatEvent = ContractChatEvent;
 
 const client = new OpenClawConsoleClient({ baseUrl: API_BASE_URL, authToken: getStoredToken() });
@@ -29,6 +30,7 @@ export const api = {
   agentContextFiles: (agentId: string) => client.getAgentContextFiles(agentId),
   updateAgentContextFiles: (agentId: string, files: Array<{ name: AgentContextFile["name"]; content: string }>) => client.updateAgentContextFiles({ agentId, files }),
   sessions: (agentId: string, offset = 0, limit = 10) => client.listSessions({ agentId, limit, offset }),
+  sessionSummaries: (agentIds?: string[]) => client.listSessionSummaries(agentIds),
   notifications: async () => (await client.listNotifications()).notifications,
   history: async (sessionKey: string, agentId: string) => {
     const value = await client.getChatHistory({ sessionKey, agentId, limit: 300, offset: 0 });

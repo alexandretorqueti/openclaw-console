@@ -1,0 +1,41 @@
+name: openclaw-console-dev
+
+# Ambiente de desenvolvimento. Não alterar compose.yaml: ele é produção.
+services:
+  db:
+    image: postgres:16
+    container_name: openclaw-console-db-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openclaw_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env.dev.local}
+      POSTGRES_DB: ${POSTGRES_DB:-openclaw_console_dev}
+    volumes:
+      - openclaw-console-db-dev-data:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openclaw-console-app-dev
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NODE_ENV: development
+      PORT: 6290
+      OPENCLAW_GATEWAY_URL: ${OPENCLAW_GATEWAY_URL:?Defina OPENCLAW_GATEWAY_URL no .env.dev.local}
+      OPENCLAW_OLLAMA_URL: ${OPENCLAW_OLLAMA_URL:?Defina OPENCLAW_OLLAMA_URL no .env.dev.local}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?Defina OPENCLAW_GATEWAY_TOKEN no .env.dev.local}
+      OPENCLAW_CONSOLE_TOKEN: ${OPENCLAW_CONSOLE_TOKEN:?Defina OPENCLAW_CONSOLE_TOKEN no .env.dev.local}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-dev-disabled}
+      OPENCLAW_DEVICE_IDENTITY_PATH: /data/state/device.json
+      OPENCLAW_AGENT_WORKSPACE_ROOT: ${OPENCLAW_AGENT_WORKSPACE_ROOT:-/data/.openclaw-dev}
+      OPENCLAW_SHARED_PROJECTS_PATH: ${OPENCLAW_SHARED_PROJECTS_PATH:-/data/workspace/projects-dev}
+    volumes:
+      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/docker/openclaw/openclaw_state-dev}/console-state:/data/state
+      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/docker/openclaw/openclaw_state-dev}:/data/.openclaw:rw,z
+
+volumes:
+  openclaw-console-db-dev-data:

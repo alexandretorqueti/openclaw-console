@@ -569,6 +569,25 @@ export function GroupChatPane({
       const composing = event.nativeEvent.isComposing;
       const isSendCombination = sendShortcut === "ctrl-enter" ? modifier && !event.shiftKey : !event.shiftKey;
 
+      // No modo "Enter envia", aguarda um instante antes de enviar. Se o
+      // usuário começar a digitar, o onChange cancela este timer.
+      if (sendShortcut === "enter" && !modifier && !event.shiftKey) {
+        event.preventDefault();
+        clearEnterDebounce();
+        // O envio é adiado, mas o Enter continua inserindo quebra de linha no
+        // textarea, como o usuário espera de um campo multilinha.
+        const nextDraft = `${draftRef.current}\n`;
+        draftRef.current = nextDraft;
+        setDraft(nextDraft);
+        if (!sending) {
+          enterDebounceRef.current = setTimeout(() => {
+            enterDebounceRef.current = undefined;
+            submitMessage();
+          }, 1000);
+        }
+        return;
+      }
+
       if (isSendCombination) {
         clearEnterDebounce();
         if (sending || composing) return;
@@ -577,15 +596,17 @@ export function GroupChatPane({
         return;
       }
 
-      if (sending) {
+      if (sendShortcut === "enter" || sending) {
         clearEnterDebounce();
         return;
       }
       clearEnterDebounce();
-      enterDebounceRef.current = setTimeout(() => {
-        enterDebounceRef.current = undefined;
-        submitMessage();
-      }, 1000);
+      if (draftRef.current.trim()) {
+        enterDebounceRef.current = setTimeout(() => {
+          enterDebounceRef.current = undefined;
+          submitMessage();
+        }, 1000);
+      }
     },
     [sendShortcut, sending, submitMessage, clearEnterDebounce],
   );
@@ -696,7 +717,10 @@ export function GroupChatPane({
                   : "Mensagem para o grupo..."
             }
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              clearEnterDebounce();
+            }}
             minRows={1}
             variant="standard"
             InputProps={{ disableUnderline: true }}

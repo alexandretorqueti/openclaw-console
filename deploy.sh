@@ -35,7 +35,7 @@
 #                          escopado e NÃO lista contas; sem isso o wrangler
 #                          falha em "Failed to retrieve account IDs")
 #   SKIP_PAGES=1          pula frontend (só API)
-#   HOST_ADDR             IP do Bazzite (default 192.168.1.16 — DHCP, pode mudar)
+#   HOST_ADDR             nome/endereço do Bazzite (default bazzite.local)
 #
 # O .env da raiz do repo é carregado automaticamente (CLOUDFLARE_API_TOKEN,
 # CLOUDFLARE_ACCOUNT_ID etc.) — regra igual à do compose: variável já
@@ -71,10 +71,10 @@ load_env() {
 load_env
 
 # --- Config -----------------------------------------------------------------
-HOST_ADDR="${HOST_ADDR:-192.168.1.16}"
+HOST_ADDR="${HOST_ADDR:-bazzite.local}"
 SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
-REPO_HOST="/home/alexandre/projetos/agentes/openclawconsole/project/openclaw-console"
+REPO_HOST="/run/media/alexandre/12T/codigofonte/openclaw-console"
 CONTAINER="openclaw-console-app"
 IMAGE_NAME="openclaw-console-app"          # nome de imagem do compose (project-service)
 PORT=6280

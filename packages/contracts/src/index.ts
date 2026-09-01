@@ -273,6 +273,21 @@ export const SessionsResponseSchema = z
   .strict();
 export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 
+export const SessionSummarySchema = z.object({
+  agentId: NonEmptyStringSchema,
+  chats: z.number().int().nonnegative(),
+  tasks: z.number().int().nonnegative(),
+  groups: z.number().int().nonnegative(),
+  subagents: z.number().int().nonnegative(),
+  archived: z.number().int().nonnegative(),
+  latestActivityAt: OptionalTimestampSchema,
+  generatedAt: z.number().int().nonnegative(),
+}).strict();
+export type SessionSummary = z.infer<typeof SessionSummarySchema>;
+
+export const SessionSummariesResponseSchema = z.object({ summaries: z.array(SessionSummarySchema) }).strict();
+export type SessionSummariesResponse = z.infer<typeof SessionSummariesResponseSchema>;
+
 export const NotificationItemSchema = z
   .object({
     session: SessionSchema,
@@ -362,6 +377,7 @@ export const CreateSessionRequestSchema = z
     task: z.string().max(500_000).optional(),
     message: z.string().max(500_000).optional(),
     worktree: z.boolean().optional(),
+    workspacePath: z.string().max(4096).optional(),
   })
   .strict();
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>;
@@ -400,6 +416,7 @@ export const PatchSessionRequestSchema = z
     thinkingLevel: NullableNonEmptyStringSchema.optional(),
     fastMode: z.union([z.boolean(), z.literal("auto"), z.null()]).optional(),
     model: NullableNonEmptyStringSchema.optional(),
+    spawnedCwd: NullableNonEmptyStringSchema.optional(),
   })
   .strict()
   .refine(

@@ -29,6 +29,7 @@ import {
   SessionsDescribeQuerySchema,
   SessionsDescribeResponseSchema,
   SessionsResponseSchema,
+  SessionSummariesResponseSchema,
   type AgentsResponse,
   type AgentMutationResponse,
   type AgentContextFilesResponse,
@@ -58,6 +59,7 @@ import {
   type SessionsDescribeQuery,
   type SessionsDescribeResponse,
   type SessionsResponse,
+  type SessionSummariesResponse,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import type { ZodTypeAny } from "zod";
 
@@ -154,6 +156,11 @@ export class OpenClawConsoleClient {
   listSessions(query: Partial<SessionsQuery> = {}): Promise<SessionsResponse> {
     const parsed = SessionsQuerySchema.parse(query);
     return this.get<SessionsResponse>(`/sessions?${toQueryString(parsed)}`, SessionsResponseSchema);
+  }
+
+  listSessionSummaries(agentIds: string[] = []): Promise<SessionSummariesResponse> {
+    const query = agentIds.length ? `?agentId=${agentIds.map(encodeURIComponent).join(",")}` : "";
+    return this.get<SessionSummariesResponse>(`/sessions/summary${query}`, SessionSummariesResponseSchema);
   }
 
   listNotifications(): Promise<NotificationsResponse> {

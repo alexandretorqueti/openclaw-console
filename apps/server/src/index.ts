@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { realpath } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -9,6 +10,7 @@ import {
   ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatSendRequestSchema, CreateSessionRequestSchema,
   CreateAgentRequestSchema, DeleteAgentRequestSchema, DeleteSessionRequestSchema, ForkSessionRequestSchema, GatewayStatusSchema, PatchSessionRequestSchema,
   ModelsResponseSchema,
+  SessionSummarySchema, SessionSummariesResponseSchema,
   NotificationItemSchema, NotificationsResponseSchema,
   SessionChangedEventSchema, SessionsDescribeQuerySchema, SessionsQuerySchema,
   UpdateAgentContextFilesRequestSchema, UpdateAgentContextFilesResponseSchema, UpdateAgentRequestSchema,
@@ -27,6 +29,7 @@ if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
 const gatewayAgentWorkspaceRoot = process.env.OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
+const sessionWorkspaceRoot = process.env.OPENCLAW_SESSION_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const elevenlabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
@@ -229,6 +232,34 @@ app.post("/api/tts", async (request, reply) => {
   reply.header("Cache-Control", "no-store");
   return reply.send(audio);
 });
+
+async function assertValidSessionWorkspacePath(workspacePath: string): Promise<void> {
+  if (!isAbsolute(workspacePath)) {
+    throw Object.assign(new Error("workspacePath must be an absolute path"), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  if (workspacePath.includes("\0")) {
+    throw Object.assign(new Error("workspacePath must not contain null bytes"), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  const resolved = resolve(workspacePath);
+  const rootResolved = resolve(sessionWorkspaceRoot);
+  const pathFromRoot = relative(rootResolved, resolved);
+  if (!pathFromRoot || pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
+    throw Object.assign(new Error(`workspacePath must be a descendant of ${rootResolved}`), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  // Resolve realpath to prevent symlink escape
+  try {
+    const realPath = await realpath(resolved);
+    const realRoot = await realpath(rootResolved);
+    const realRelative = relative(realRoot, realPath);
+    if (!realRelative || realRelative === ".." || realRelative.startsWith(`..${sep}`) || isAbsolute(realRelative)) {
+      throw Object.assign(new Error(`workspacePath resolves outside ${realRoot} via symlink`), { code: "INVALID_WORKSPACE_PATH" });
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "INVALID_WORKSPACE_PATH") throw error;
+    // Path doesn't exist yet — that's OK, we already validated the logical path
+  }
+}
+
 app.post("/api/agents", async (request) => {
   const body = parse(CreateAgentRequestSchema, request.body);
   const localRelative = relative(resolve(defaultAgentWorkspaceRoot), resolve(body.workspace));
@@ -276,6 +307,28 @@ app.get("/api/sessions", async (request) => {
   const query = parse(SessionsQuerySchema, request.query);
   return normalizeSessions(await rpc("sessions.list", { ...query, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true }));
 });
+app.get("/api/sessions/summary", async (request) => {
+  const raw = record(request.query);
+  const requested = typeof raw.agentId === "string" ? raw.agentId.split(",").map((id) => id.trim()).filter(Boolean) : [];
+  const agents = requested.length ? requested : normalizeAgents(await rpc("agents.list", {})).agents.map((agent) => agent.id);
+  const pages = await Promise.all(agents.map(async (agentId) => {
+    const payload = await rpc("sessions.list", { agentId, limit: 1000, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: false });
+    return { agentId, sessions: normalizeSessions(payload).sessions };
+  }));
+  const summaries = pages.map(({ agentId, sessions }) => {
+    const counts = { chats: 0, tasks: 0, groups: 0, subagents: 0, archived: 0 };
+    for (const session of sessions) {
+      if (session.archived) { counts.archived += 1; continue; }
+      if (session.parentSessionKey) counts.subagents += 1;
+      else if (session.key.includes(":group:")) counts.groups += 1;
+      else if (/^(dev-|analysis-|\[TAREFA\])/i.test(session.label ?? session.title ?? session.key)) counts.tasks += 1;
+      else counts.chats += 1;
+    }
+    const latestActivityAt = sessions.reduce((latest, session) => Math.max(latest, session.lastActivityAt ?? session.updatedAt ?? 0), 0) || undefined;
+    return SessionSummarySchema.parse({ agentId, ...counts, ...(latestActivityAt === undefined ? {} : { latestActivityAt }), generatedAt: Date.now() });
+  });
+  return SessionSummariesResponseSchema.parse({ summaries });
+});
 app.get("/api/notifications", async () => {
   const agents = normalizeAgents(await rpc("agents.list", {})).agents;
   const pages = await Promise.allSettled(agents.map((agent) => rpc("sessions.list", { agentId: agent.id, limit: 200, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true })));
@@ -314,7 +367,23 @@ app.post("/api/chat/abort", async (request) => {
   const runIds = Array.isArray(payload.runIds) ? payload.runIds.filter((value): value is string => typeof value === "string") : undefined;
   return { ok: typeof payload.ok === "boolean" ? payload.ok : true, aborted: typeof payload.aborted === "boolean" ? payload.aborted : (runIds?.length ?? 0) > 0, ...(runIds ? { runIds } : {}) };
 });
-app.post("/api/sessions", async (request) => { const body = parse(CreateSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", body), body.key); });
+app.post("/api/sessions", async (request) => {
+  const body = parse(CreateSessionRequestSchema, request.body);
+  const { workspacePath, ...createBody } = body;
+  if (workspacePath !== undefined) {
+    await assertValidSessionWorkspacePath(workspacePath);
+  }
+  const result = await rpc("sessions.create", createBody);
+  const response = mutation(result, body.key);
+  if (workspacePath !== undefined && typeof response.key === "string") {
+    await rpc("sessions.patch", {
+      key: response.key,
+      ...(body.agentId ? { agentId: body.agentId } : {}),
+      spawnedCwd: workspacePath,
+    });
+  }
+  return response;
+});
 app.post("/api/sessions/fork", async (request) => { const body = parse(ForkSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", { ...body, agentId: canonicalAgentId(body.parentSessionKey, body.agentId), fork: true }), body.key); });
 app.patch("/api/sessions", async (request) => { const body = parse(PatchSessionRequestSchema, request.body); return mutation(await rpc("sessions.patch", { ...body, agentId: canonicalAgentId(body.key, body.agentId) }), body.key); });
 app.get("/api/sessions/describe", async (request) => {
