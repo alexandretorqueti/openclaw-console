@@ -144,9 +144,14 @@ function agentFromKey(key?: string): string | undefined {
   return text(key.split(":")[1]);
 }
 
-export function normalizeMessage(value: unknown, index = 0): ChatMessage | undefined {
+export function normalizeMessage(value: unknown): ChatMessage | undefined {
   const row = record(value);
   const nested = record(row.message);
+  // `chat.message.get` only accepts the Gateway's persisted message id. Do not
+  // manufacture one from the position/timestamp: it looks valid to consumers,
+  // but can never be used to retrieve a truncated message in full.
+  const id = text(row.id) ?? text(row.messageId) ?? text(row.message_id) ?? text(nested.id) ?? text(nested.messageId);
+  if (!id) return undefined;
   const roleValue = text(row.role) ?? text(nested.role) ?? "unknown";
   let role = normalizedRole(roleValue);
   const body = row.content ?? nested.content ?? row.text;
@@ -169,7 +174,7 @@ export function normalizeMessage(value: unknown, index = 0): ChatMessage | undef
   }
   const createdAt = timestamp(row.timestamp) ?? timestamp(row.createdAt) ?? timestamp(row.ts);
   const parsed = ChatMessageSchema.safeParse({
-    id: text(row.id) ?? text(row.messageId) ?? `${role}-${createdAt ?? index}-${index}`,
+    id,
     role, content, ...(thinking ? { thinking } : {}), author: text(row.author) ?? text(row.name), createdAt,
     runId: text(row.runId), status, stopReason: text(row.stopReason), toolName,
   });
@@ -182,7 +187,7 @@ export function normalizeHistory(payload: unknown, sessionKey: string) {
   return {
     sessionKey,
     ...(text(root.sessionId) ? { sessionId: text(root.sessionId) } : {}),
-    messages: rows.flatMap((value, index) => { const message = normalizeMessage(value, index); return message ? [message] : []; }),
+    messages: rows.flatMap((value) => { const message = normalizeMessage(value); return message ? [message] : []; }),
     ...(bool(root.hasMore) !== undefined ? { hasMore: bool(root.hasMore) } : {}),
     ...(number(root.nextOffset) !== undefined ? { nextOffset: number(root.nextOffset) } : {}),
   };
