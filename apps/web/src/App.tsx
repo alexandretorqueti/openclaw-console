@@ -222,15 +222,15 @@ function isSubSession(session: ApiSession): boolean { return Boolean(session.par
 // Estado de colapso das seções da lista de conversas, persistido localmente.
 // `true` = seção minimizada. `subagents` nasce minimizada por padrão.
 const chatSectionsStorageKey = "openclaw-console-chat-sections";
-type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean; subagents: boolean; tasks: boolean };
+type ChatSectionsState = { chats: boolean; groups: boolean; hidden: boolean; helpdesk: boolean; subagents: boolean; tasks: boolean };
 function loadChatSectionsState(): ChatSectionsState {
   try {
     const raw = localStorage.getItem(chatSectionsStorageKey);
-    if (!raw) return { chats: false, groups: false, hidden: true, subagents: true, tasks: false };
+    if (!raw) return { chats: false, groups: false, hidden: true, helpdesk: false, subagents: true, tasks: false };
     const parsed = JSON.parse(raw) as Partial<ChatSectionsState>;
-    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false, subagents: parsed.subagents !== false, tasks: parsed.tasks === true };
+    return { chats: parsed.chats === true, groups: parsed.groups === true, hidden: parsed.hidden !== false, helpdesk: parsed.helpdesk === true, subagents: parsed.subagents !== false, tasks: parsed.tasks === true };
   } catch {
-    return { chats: false, groups: false, hidden: true, subagents: true, tasks: false };
+    return { chats: false, groups: false, hidden: true, helpdesk: false, subagents: true, tasks: false };
   }
 }
 
@@ -260,11 +260,14 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary,
   const toggleSection = (section: keyof ChatSectionsState) => setSectionsCollapsed((current) => { const next = { ...current, [section]: !current[section] }; try { localStorage.setItem(chatSectionsStorageKey, JSON.stringify(next)); } catch { /* armazenamento indisponível */ } return next; });
   useEffect(() => { const sentinel = sentinelRef.current; if (!sentinel || !hasMore || loading || loadingMore) return; const observer = new IntersectionObserver(([entry]) => { if (entry?.isIntersecting) onLoadMore(); }, { root: panelRef.current, rootMargin: "120px" }); observer.observe(sentinel); return () => observer.disconnect(); }, [hasMore, loading, loadingMore, onLoadMore]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
-  const isTask = (s: any) => { const n = s.label ?? s.title ?? s.key; return typeof n === 'string' && (n.startsWith('dev-') || n.startsWith('analysis-') || n.startsWith('[TAREFA]')); };
-  const taskSessions = sessions.filter((session) => isTask(session) && !session.archived);
-  const chatSessions = sessions.filter((session) => !isGroupSession(session) && !isSubSession(session) && !isTask(session) && !session.archived);
-  const groupSessions = sessions.filter((session) => isGroupSession(session) && !session.archived);
-  const subagentSessions = sessions.filter((session) => isSubSession(session) && !session.archived);
+  const sessionName = (session: ApiSession) => session.label ?? session.title ?? session.key;
+  const isHelpdesk = (session: ApiSession) => sessionName(session).trim().toLowerCase().startsWith("helpdesk");
+  const isTask = (s: ApiSession) => { const n = sessionName(s); return n.startsWith('dev-') || n.startsWith('analysis-') || n.startsWith('[TAREFA]'); };
+  const taskSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && isTask(session));
+  const chatSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && !isGroupSession(session) && !isSubSession(session) && !isTask(session));
+  const groupSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && isGroupSession(session));
+  const subagentSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && isSubSession(session));
+  const helpdeskSessions = sessions.filter((session) => !session.archived && isHelpdesk(session));
   const hiddenSessions = sessions.filter((session) => session.archived);
   const renderSessionItem = (session: ApiSession) => {
     const name = session.label ?? session.title ?? session.key;
@@ -297,6 +300,10 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary,
     <ChatSection title="SubAgentes" count={summary?.subagents ?? subagentSessions.length} collapsed={sectionsCollapsed.subagents} onToggle={() => toggleSection("subagents")}>
       {subagentSessions.map(renderSessionItem)}
       {!loading && !subagentSessions.length && <Box className="chat-empty">Nenhuma sub-sessão criada por outro agente.</Box>}
+    </ChatSection>
+    <ChatSection title="Helpdesk" count={helpdeskSessions.length} collapsed={sectionsCollapsed.helpdesk} onToggle={() => toggleSection("helpdesk")}>
+      {helpdeskSessions.map(renderSessionItem)}
+      {!loading && !helpdeskSessions.length && <Box className="chat-empty">Nenhuma sessão de helpdesk.</Box>}
     </ChatSection>
     {hiddenSessions.length > 0 && <ChatSection title="Ocultas" count={hiddenSessions.length} collapsed={sectionsCollapsed.hidden} onToggle={() => toggleSection("hidden")}>
       {hiddenSessions.map(renderSessionItem)}
@@ -1147,7 +1154,7 @@ function ConsoleApp() {
     void loadSessions(target.id);
   }, [agents, agentId, loadSessions]);
   const renameSession = async (session: ApiSession) => { const label = window.prompt("Novo nome da sessão:", session.label ?? session.title)?.trim(); if (!label || label === (session.label ?? session.title)) return; try { await api.patchSession({ key: session.key, agentId: sessionAgentId(session), label }); setSessions((current) => current.map((item) => item.key === session.key ? { ...item, label, title: label } : item)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
-  const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); if (currentSessionKeyRef.current === key) setSessionKey(""); await loadSessions(sessionAgentId(session)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
+  const deleteSession = async (session: ApiSession) => { if (session.hasActiveRun) return; if (!window.confirm(`Excluir definitivamente a sessão “${session.label ?? session.title}”? O histórico será arquivado pelo Gateway.`)) return; const key = session.key; try { const result = await api.deleteSession({ key, agentId: sessionAgentId(session) }); if (!result.deleted) throw new Error("O Gateway não excluiu a sessão"); setSessions((current) => current.filter((item) => item.key !== key)); processingBySessionRef.current.delete(key); if (currentSessionKeyRef.current === key) setSessionKey(""); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } };
   // Ocultar/mostrar usa o campo archived do Gateway: a sessão continua existindo com
   // histórico intacto, apenas sai da lista de conversas (e para de gerar notificações).
   const toggleHiddenSession = async (session: ApiSession) => {
