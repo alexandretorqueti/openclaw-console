@@ -20,5 +20,5 @@ services:
       OPENCLAW_AGENT_WORKSPACE_ROOT: ${OPENCLAW_AGENT_WORKSPACE_ROOT:-/data/.openclaw}
       OPENCLAW_SHARED_PROJECTS_PATH: ${OPENCLAW_SHARED_PROJECTS_PATH:-/data/workspace/projects}
     volumes:
-      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/docker/openclaw/openclaw_state}/console-state:/data/state
-      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/docker/openclaw/openclaw_state}:/data/.openclaw:rw,z
+      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/containers/openclaw/openclaw_state}/console-state:/data/state
+      - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/containers/openclaw/openclaw_state}:/data/.openclaw:rw,z
