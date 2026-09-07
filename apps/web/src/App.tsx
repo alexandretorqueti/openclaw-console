@@ -8,7 +8,7 @@ import {
   TerminalRounded,
   VisibilityOffRounded,
   VisibilityRounded,
-  VolumeUpRounded,
+  VolumeUpRounded, SummarizeRounded,
   VolumeOffRounded,
 } from "@mui/icons-material";
 import {
@@ -486,10 +486,10 @@ function speechRecognitionSupported(): boolean {
   return Boolean(speechRecognitionCtor());
 }
 
-function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onModelChange, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsSpeaking = false, ttsSupported = false, onToggleTts, micEnabled = true, onToggleMic, onVoiceNavigate, onVoiceOpenAgent }: {
+function ChatPane({ agent, session, messages, loading, processing, streamText, sendShortcut, models, initialDraft = "", onDraftChange, mobile = false, onToggleChats, onShortcutChange, onSend, onModelChange, onAbort, onFork, onShowDetails, ttsEnabled = false, ttsMode = "summary", ttsSpeaking = false, ttsSupported = false, onToggleTts, onToggleTtsMode, micEnabled = true, onToggleMic, onVoiceNavigate, onVoiceOpenAgent }: {
   agent?: ApiAgent; session?: ApiSession; messages: ApiMessage[]; loading: boolean; processing: boolean; streamText: string; sendShortcut: SendShortcut;
   models: ApiModel[]; initialDraft?: string; onDraftChange: (text: string) => void; mobile?: boolean; onToggleChats: () => void; onShortcutChange: (shortcut: SendShortcut) => void; onSend: (message: string) => Promise<void>; onModelChange: (modelRef: string) => Promise<void>; onAbort: () => Promise<void>; onFork: () => void; onShowDetails: () => void;
-  ttsEnabled?: boolean; ttsSpeaking?: boolean; ttsSupported?: boolean; onToggleTts?: () => void;
+  ttsEnabled?: boolean; ttsMode?: "summary" | "full"; ttsSpeaking?: boolean; ttsSupported?: boolean; onToggleTts?: () => void; onToggleTtsMode?: () => void;
   micEnabled?: boolean; onToggleMic?: () => void;
   onVoiceNavigate?: (direction: "next" | "previous") => void;
   onVoiceOpenAgent?: (name: string) => void;
@@ -796,6 +796,11 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
       {ttsSupported && <Tooltip title={ttsEnabled ? "Desativar leitura em voz alta" : "Ativar leitura em voz alta"}>
         <IconButton size="small" onClick={onToggleTts} color={ttsEnabled ? "primary" : "default"}>
           {ttsSpeaking ? <VolumeUpRounded fontSize="small" sx={{ animation: "pulse 1.2s infinite" }} /> : ttsEnabled ? <VolumeUpRounded fontSize="small" /> : <VolumeOffRounded fontSize="small" />}
+        </IconButton>
+      </Tooltip>}
+      {ttsSupported && <Tooltip title={ttsMode === "summary" ? "Voz: resumo (clique para ler tudo)" : "Voz: texto completo (clique para resumir)"}>
+        <IconButton size="small" onClick={onToggleTtsMode} color={ttsMode === "summary" ? "primary" : "default"} aria-label={ttsMode === "summary" ? "Usar resumo na leitura" : "Usar texto completo na leitura"}>
+          <SummarizeRounded fontSize="small" />
         </IconButton>
       </Tooltip>}
       <Tooltip title={micEnabled ? "Desativar microfone (esconde os botões de ditado por voz)" : "Ativar microfone (mostra os botões de ditado por voz)"}>
@@ -1246,7 +1251,7 @@ function ConsoleApp() {
             {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} micEnabled={micEnabled} onToggleMic={toggleMic} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsMode={tts.mode} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} onToggleTtsMode={tts.toggleMode} micEnabled={micEnabled} onToggleMic={toggleMic} />
           </>
         ) : (
           <>
@@ -1256,7 +1261,7 @@ function ConsoleApp() {
             {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} /> : <Box className="chats-panel-placeholder" />}
-            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} micEnabled={micEnabled} onToggleMic={toggleMic} />
+            <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsMode={tts.mode} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} onToggleTtsMode={tts.toggleMode} micEnabled={micEnabled} onToggleMic={toggleMic} />
           </>
         )}
         <SessionDetailsModal agent={selectedAgent} session={detailsForSession ?? selectedSession} open={detailsModalOpen} onClose={() => setDetailsModalOpen(false)} />

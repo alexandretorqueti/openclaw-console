@@ -24,6 +24,18 @@ export const api = {
   },
   agents: async () => (await client.listAgents()).agents,
   models: async () => (await client.listModels()).models,
+  speechSummary: async (text: string): Promise<string> => {
+    const token = getStoredToken();
+    const response = await fetch(`${API_BASE_URL}/speech-summary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) throw new Error(`Resumo por voz indisponível (HTTP ${response.status})`);
+    const payload = await response.json() as { summary?: unknown };
+    if (typeof payload.summary !== "string" || !payload.summary.trim()) throw new Error("Resumo por voz vazio");
+    return payload.summary.trim();
+  },
   createAgent: (input: { name: string; workspace: string; model?: string; emoji?: string; avatar?: string }) => client.createAgent(input),
   updateAgent: (input: { agentId: string; name?: string; workspace?: string; model?: string; emoji?: string; avatar?: string }) => client.updateAgent(input),
   deleteAgent: (input: { agentId: string; deleteFiles?: boolean }) => client.deleteAgent({ deleteFiles: false, ...input }),

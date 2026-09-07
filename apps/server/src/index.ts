@@ -24,6 +24,7 @@ import { ensureProjectsLink } from "./workspace-project-link.js";
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
 const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
+const speechSummaryModel = "qwen3.5:9b";
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
@@ -205,6 +206,39 @@ app.get("/api/models", async () => {
     return [{ id: row.id, name: row.name, provider: row.provider, ...(typeof row.alias === "string" ? { alias: row.alias } : {}), ...(typeof row.available === "boolean" ? { available: row.available } : {}), ...(typeof row.contextWindow === "number" ? { contextWindow: row.contextWindow } : {}), ...(sizeBytes !== undefined ? { sizeBytes } : {}), ...(typeof row.reasoning === "boolean" ? { reasoning: row.reasoning } : {}) }];
   });
   return ModelsResponseSchema.parse({ models });
+});
+const SpeechSummaryRequestSchema = z.object({ text: z.string().trim().min(1).max(20_000) }).strict();
+app.post("/api/speech-summary", async (request, reply) => {
+  const body = parse(SpeechSummaryRequestSchema, request.body);
+  const upstream = await fetch(`${ollamaUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: speechSummaryModel,
+      stream: false,
+      think: false,
+      options: { temperature: 0.2 },
+      prompt: [
+        "Você é um resumidor para leitura em voz alta.",
+        "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
+        "Escreva em português brasileiro, em no máximo 3 frases curtas.",
+        "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
+        "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
+        "Texto para resumir:",
+        body.text,
+      ].join("\n\n"),
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 300);
+    app.log.warn({ status: upstream.status, detail, model: speechSummaryModel }, "Ollama speech summary failed");
+    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
+  }
+  const payload = record(await upstream.json());
+  const summary = typeof payload.response === "string" ? payload.response.trim() : "";
+  if (!summary) throw Object.assign(new Error("Ollama não retornou um resumo"), { code: "UPSTREAM_ERROR" });
+  return { summary };
 });
 const TtsRequestSchema = z.object({
   text: z.string().trim().min(1).max(5000),
