@@ -537,6 +537,7 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
   const silenceDeadlineRef = useRef<number | undefined>(undefined);
   const autoResumeRef = useRef(false);
   const wasProcessingRef = useRef(false);
+  const pausedForTtsRef = useRef(false);
   // Parada intencional (botão, clique/digitação, envio) → não religa sozinho.
   const intentionalStopRef = useRef(false);
   // Timer de religada após o navegador encerrar a escuta por silêncio (no-speech).
@@ -697,6 +698,26 @@ function ChatPane({ agent, session, messages, loading, processing, streamText, s
     if (!micEnabled && recognitionRef.current) stopListening();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [micEnabled]);
+  // Evita que o reconhecimento capte a própria voz do agente. Se o usuário
+  // estava ditando antes da fala, retoma automaticamente quando ela termina;
+  // se o microfone já estava parado, não inicia nada por conta própria.
+  useEffect(() => {
+    if (ttsSpeaking) {
+      if (recognitionRef.current) {
+        pausedForTtsRef.current = true;
+        stopListening();
+      }
+      return;
+    }
+    if (!pausedForTtsRef.current) return;
+    pausedForTtsRef.current = false;
+    if (micEnabled && !busyRef.current && !loading) {
+      window.setTimeout(() => {
+        if (micEnabled && !busyRef.current && !loading && !recognitionRef.current) startListening();
+      }, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsSpeaking, micEnabled, processing, loading]);
   // Quando a resposta do agente chega (processing true→false) e o envio foi
   // automático pelo silêncio, religa o microfone para continuar ditando.
   useEffect(() => {

@@ -90,6 +90,9 @@ export function useTextToSpeech() {
     if (!enabled || !supported || typeof window === "undefined") return;
     stop();
     const requestId = requestIdRef.current;
+    // Sinaliza também o período de preparação do resumo. Assim o reconhecimento
+    // não continua captando o microfone enquanto o resumo é gerado.
+    setSpeaking(true);
     let clean = cleanForSpeech(text, "full");
     if (mode === "summary") {
       try {
@@ -98,7 +101,10 @@ export function useTextToSpeech() {
         clean = cleanForSpeech(text, "summary");
       }
     }
-    if (requestId !== requestIdRef.current || !clean) return;
+    if (requestId !== requestIdRef.current || !clean) {
+      if (requestId === requestIdRef.current) setSpeaking(false);
+      return;
+    }
     const utterance = new SpeechSynthesisUtterance(clean);
     utterance.lang = "pt-BR";
     utterance.rate = 1;
