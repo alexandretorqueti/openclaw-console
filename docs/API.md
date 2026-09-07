@@ -52,6 +52,7 @@ O BFF extrai o agente da session key para operações sobre sessões existentes.
 | Método | Rota | Contrato |
 |---|---|---|
 | `GET` | `/api/chat/history` | `ChatHistoryQuerySchema` → `ChatHistoryResponseSchema` |
+| `GET` | `/api/chat/message` | recupera pelo ID uma mensagem integral truncada em `chat.history` |
 | `POST` | `/api/chat/send` | `ChatSendRequestSchema` → `ChatSendResponseSchema` |
 | `POST` | `/api/chat/abort` | `ChatAbortRequestSchema` → `ChatAbortResponseSchema` |
 | `GET` | `/api/sessions/describe?key=...` | `SessionsDescribeQuerySchema` → gateway passthrough |

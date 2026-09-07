@@ -10,6 +10,8 @@ import {
   ChatEventSchema,
   ChatHistoryQuerySchema,
   ChatHistoryResponseSchema,
+  ChatMessageGetQuerySchema,
+  ChatMessageGetResponseSchema,
   ChatSendRequestSchema,
   ChatSendResponseSchema,
   CreateSessionRequestSchema,
@@ -40,6 +42,8 @@ import {
   type ChatEvent,
   type ChatHistoryQuery,
   type ChatHistoryResponse,
+  type ChatMessageGetQuery,
+  type ChatMessageGetResponse,
   type ChatSendRequest,
   type ChatSendResponse,
   type CreateSessionRequest,
@@ -170,6 +174,11 @@ export class OpenClawConsoleClient {
   getChatHistory(query: ChatHistoryQuery): Promise<ChatHistoryResponse> {
     const parsed = ChatHistoryQuerySchema.parse(query);
     return this.get<ChatHistoryResponse>(`/chat/history?${toQueryString(parsed)}`, ChatHistoryResponseSchema);
+  }
+
+  getChatMessage(query: ChatMessageGetQuery): Promise<ChatMessageGetResponse> {
+    const parsed = ChatMessageGetQuerySchema.parse(query);
+    return this.get<ChatMessageGetResponse>(`/chat/message?${toQueryString(parsed)}`, ChatMessageGetResponseSchema);
   }
 
   sendChat(request: ChatSendRequest): Promise<ChatSendResponse> {

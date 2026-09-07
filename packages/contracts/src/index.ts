@@ -324,6 +324,21 @@ export const ChatHistoryResponseSchema = z
   .strict();
 export type ChatHistoryResponse = z.infer<typeof ChatHistoryResponseSchema>;
 
+export const ChatMessageGetQuerySchema = z.object({
+  sessionKey: NonEmptyStringSchema,
+  agentId: z.string().trim().min(1).optional(),
+  messageId: NonEmptyStringSchema,
+  maxChars: integerQuery(1, 500_000).default(500_000),
+}).strict();
+export type ChatMessageGetQuery = z.infer<typeof ChatMessageGetQuerySchema>;
+
+export const ChatMessageGetResponseSchema = z.object({
+  ok: z.boolean(),
+  message: ChatMessageSchema.optional(),
+  unavailableReason: z.enum(["not_found", "oversized", "not_visible"]).optional(),
+}).strict();
+export type ChatMessageGetResponse = z.infer<typeof ChatMessageGetResponseSchema>;
+
 export const ChatSendRequestSchema = z
   .object({
     sessionKey: NonEmptyStringSchema,

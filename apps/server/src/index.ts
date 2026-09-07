@@ -7,7 +7,7 @@ import fastifyStatic from "@fastify/static";
 import { z, ZodError, type ZodType } from "zod";
 import {
   AgentContextFileNameSchema, AgentContextFilesResponseSchema,
-  ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatSendRequestSchema, CreateSessionRequestSchema,
+  ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatMessageGetQuerySchema, ChatMessageGetResponseSchema, ChatSendRequestSchema, CreateSessionRequestSchema,
   CreateAgentRequestSchema, DeleteAgentRequestSchema, DeleteSessionRequestSchema, ForkSessionRequestSchema, GatewayStatusSchema, PatchSessionRequestSchema,
   ModelsResponseSchema,
   SessionSummarySchema, SessionSummariesResponseSchema,
@@ -17,7 +17,7 @@ import {
   type GatewayStatus,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } from "@alexandretorqueti/openclaw-gateway-client";
-import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeSessions, record } from "./normalizers.js";
+import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
 
@@ -387,6 +387,22 @@ app.get("/api/chat/history", async (request) => {
   const agentId = canonicalAgentId(query.sessionKey, query.agentId);
   const payload = await rpc("chat.history", { sessionKey: query.sessionKey, ...(agentId ? { agentId } : {}), limit: query.limit, offset: query.offset });
   return normalizeHistory(payload, query.sessionKey);
+});
+app.get("/api/chat/message", async (request) => {
+  const query = parse(ChatMessageGetQuerySchema, request.query);
+  const agentId = canonicalAgentId(query.sessionKey, query.agentId);
+  const payload = record(await rpc("chat.message.get", {
+    sessionKey: query.sessionKey,
+    ...(agentId ? { agentId } : {}),
+    messageId: query.messageId,
+    maxChars: query.maxChars,
+  }));
+  const message = payload.message === undefined ? undefined : normalizeMessage(payload.message);
+  return ChatMessageGetResponseSchema.parse({
+    ok: payload.ok === true,
+    ...(message ? { message } : {}),
+    ...(typeof payload.unavailableReason === "string" ? { unavailableReason: payload.unavailableReason } : {}),
+  });
 });
 app.post("/api/chat/send", async (request) => {
   const body = parse(ChatSendRequestSchema, request.body);
