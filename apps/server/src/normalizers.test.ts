@@ -49,6 +49,8 @@ test("accepts every Gateway message-id shape without synthesizing a replacement"
     [{ message_id: "row-message-id-snake", role: "assistant", content: "a" }, "row-message-id-snake"],
     [{ message: { id: "nested-id", role: "assistant", content: "a" } }, "nested-id"],
     [{ message: { messageId: "nested-message-id", role: "assistant", content: "a" } }, "nested-message-id"],
+    [{ __openclaw: { id: "gateway-metadata-id" }, role: "assistant", content: "a" }, "gateway-metadata-id"],
+    [{ __openclaw: { messageId: "gateway-metadata-message-id" }, role: "assistant", content: "a" }, "gateway-metadata-message-id"],
   ] as const;
 
   for (const [payload, expectedId] of cases) {

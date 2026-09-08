@@ -147,10 +147,14 @@ function agentFromKey(key?: string): string | undefined {
 export function normalizeMessage(value: unknown): ChatMessage | undefined {
   const row = record(value);
   const nested = record(row.message);
+  const gatewayMetadata = record(row.__openclaw);
   // `chat.message.get` only accepts the Gateway's persisted message id. Do not
   // manufacture one from the position/timestamp: it looks valid to consumers,
   // but can never be used to retrieve a truncated message in full.
-  const id = text(row.id) ?? text(row.messageId) ?? text(row.message_id) ?? text(nested.id) ?? text(nested.messageId);
+  // Gateway history responses store the canonical id in `__openclaw.id`.
+  const id = text(row.id) ?? text(row.messageId) ?? text(row.message_id)
+    ?? text(nested.id) ?? text(nested.messageId)
+    ?? text(gatewayMetadata.id) ?? text(gatewayMetadata.messageId);
   if (!id) return undefined;
   const roleValue = text(row.role) ?? text(nested.role) ?? "unknown";
   let role = normalizedRole(roleValue);
