@@ -74,7 +74,9 @@ load_env
 HOST_ADDR="${HOST_ADDR:-bazzite.local}"
 SSH_USER="alexandre"
 SSH_KEY="/root/.ssh/id_ed25519"
-REPO_HOST="/run/media/alexandre/12T/codigofonte/openclaw-console"
+# Checkout canônico de produção no ServerIA. O caminho /run/media é um
+# checkout antigo e pode divergir do repositório usado no desenvolvimento.
+REPO_HOST="/home/alexandre/codigofonte/openclaw-console"
 CONTAINER="openclaw-console-app"
 IMAGE_NAME="openclaw-console-app"          # nome de imagem do compose (project-service)
 PORT=6280

@@ -18,7 +18,6 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/packages ./packages
-RUN chmod -R a+rX /app
 USER node
 EXPOSE 47831
 HEALTHCHECK --interval=15s --timeout=4s --start-period=15s --retries=4 \
