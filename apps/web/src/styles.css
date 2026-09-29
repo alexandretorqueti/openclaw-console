@@ -68,6 +68,9 @@ button, input, textarea { font: inherit; }
 .chats-brand .MuiTypography-h6 { font-size: 1rem; font-weight: 800; }
 .chats-agent-select { width: 100%; }
 .chats-agent-select .MuiOutlinedInput-root { border-radius: 12px; background: rgba(116, 126, 160, .06); font-size: .82rem; }
+.chats-search .MuiOutlinedInput-root { border-radius: 12px; background: rgba(116, 126, 160, .06); font-size: .82rem; }
+.chats-search .MuiInputAdornment-root { color: #737d9a; }
+.chats-search input::placeholder { color: #8b93ad; opacity: .9; }
 .new-chat-button { width: 100%; justify-content: flex-start !important; text-align: left !important; padding: 9px 12px !important; border-radius: 11px !important; color: #b6abff !important; text-transform: none !important; font-weight: 650 !important; font-size: .8rem !important; border: 1px dashed rgba(130, 141, 177, .24) !important; }
 .new-chat-button:hover { border-color: rgba(124, 109, 242, .5) !important; background: rgba(124, 109, 242, .08) !important; }
 .chats-section-title { margin: 2px 0 -4px; }

@@ -8,11 +8,11 @@ import {
   TerminalRounded,
   VisibilityOffRounded,
   VisibilityRounded,
-  VolumeUpRounded, SummarizeRounded,
+  VolumeUpRounded, SummarizeRounded, SearchRounded,
   VolumeOffRounded,
 } from "@mui/icons-material";
 import {
-  Alert, Avatar, Badge, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton,
+  Alert, Avatar, Badge, Box, Button, Chip, CircularProgress, ClickAwayListener, Dialog, DialogActions, DialogContent, DialogTitle, Divider, FormControlLabel, IconButton, InputAdornment,
   LinearProgress, Menu, MenuItem, Paper, Popover, Select, Stack, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
 import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type ApiModel, type ApiNotification, type ApiSession, type ApiSessionSummary, type GatewayStatus } from "./api";
@@ -245,9 +245,9 @@ function ChatSection({ title, count, collapsed, onToggle, children }: { title: s
   </Box>;
 }
 
-function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary, selected, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onToggleHidden, onShowDetails, onClose }: {
+function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary, selected, search, onSearchChange, loading, loadingMore, hasMore, onSelect, onCreate, onLoadMore, onRename, onDelete, onToggleHidden, onShowDetails, onClose }: {
   agents: ApiAgent[]; selectedAgentId: string; onAgentSelect: (agentId: string) => void; sessions: ApiSession[]; selected?: ApiSession;
-  summary?: ApiSessionSummary;
+  summary?: ApiSessionSummary; search: string; onSearchChange: (value: string) => void;
   loading: boolean; loadingMore: boolean; hasMore: boolean;
   onSelect: (session: ApiSession) => void; onCreate: () => void; onLoadMore: () => void;
   onRename: (session: ApiSession) => void; onDelete: (session: ApiSession) => void; onToggleHidden: (session: ApiSession) => void; onShowDetails: (session: ApiSession) => void;
@@ -263,6 +263,7 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary,
   const sessionName = (session: ApiSession) => session.label ?? session.title ?? session.key;
   const isHelpdesk = (session: ApiSession) => sessionName(session).trim().toLowerCase().startsWith("helpdesk");
   const isTask = (s: ApiSession) => { const n = sessionName(s); return n.startsWith('dev-') || n.startsWith('analysis-') || n.startsWith('[TAREFA]'); };
+  const hasSearch = Boolean(search.trim());
   const taskSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && isTask(session));
   const chatSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && !isGroupSession(session) && !isSubSession(session) && !isTask(session));
   const groupSessions = sessions.filter((session) => !session.archived && !isHelpdesk(session) && isGroupSession(session));
@@ -283,21 +284,22 @@ function ChatsPanel({ agents, selectedAgentId, onAgentSelect, sessions, summary,
     <Select size="small" className="chats-agent-select" value={selectedAgentId} onChange={(event) => onAgentSelect(String(event.target.value))} renderValue={(value) => { const agent = agents.find((a) => a.id === value); return agent ? `${agent.emoji ?? "🤖"} ${agent.name}` : value; }}>
       {agents.map((agent) => <MenuItem key={agent.id} value={agent.id}>{agent.emoji ?? "🤖"} {agent.name}</MenuItem>)}
     </Select>
+    <TextField className="chats-search" size="small" fullWidth value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Buscar sessões" aria-label="Buscar sessões pelo nome" InputProps={{ startAdornment: <InputAdornment position="start"><SearchRounded fontSize="small" /></InputAdornment> }} />
     <Button className="new-chat-button" startIcon={<AddRounded />} disabled={!selectedAgent} onClick={onCreate}>Novo chat</Button>
     {loading && <LinearProgress className="chats-loading-progress" />}
-    <ChatSection title="Chats" count={summary?.chats ?? chatSessions.length} collapsed={sectionsCollapsed.chats} onToggle={() => toggleSection("chats")}>
+    <ChatSection title="Chats" count={hasSearch ? chatSessions.length : summary?.chats ?? chatSessions.length} collapsed={sectionsCollapsed.chats} onToggle={() => toggleSection("chats")}>
       {chatSessions.map(renderSessionItem)}
       {!loading && !chatSessions.length && <Box className="chat-empty">Nenhum chat 1:1 deste agente.</Box>}
     </ChatSection>
-    <ChatSection title="Tarefas" count={summary?.tasks ?? taskSessions.length} collapsed={sectionsCollapsed.tasks} onToggle={() => toggleSection('tasks' as any)}>
+    <ChatSection title="Tarefas" count={hasSearch ? taskSessions.length : summary?.tasks ?? taskSessions.length} collapsed={sectionsCollapsed.tasks} onToggle={() => toggleSection('tasks' as any)}>
       {taskSessions.map(renderSessionItem)}
       {!loading && !taskSessions.length && <Box className="chat-empty">Nenhuma tarefa.</Box>}
     </ChatSection>
-    <ChatSection title="Grupos" count={summary?.groups ?? groupSessions.length} collapsed={sectionsCollapsed.groups} onToggle={() => toggleSection("groups")}>
+    <ChatSection title="Grupos" count={hasSearch ? groupSessions.length : summary?.groups ?? groupSessions.length} collapsed={sectionsCollapsed.groups} onToggle={() => toggleSection("groups")}>
       {groupSessions.map(renderSessionItem)}
       {!loading && !groupSessions.length && <Box className="chat-empty">Nenhuma sessão de grupo deste agente.</Box>}
     </ChatSection>
-    <ChatSection title="SubAgentes" count={summary?.subagents ?? subagentSessions.length} collapsed={sectionsCollapsed.subagents} onToggle={() => toggleSection("subagents")}>
+    <ChatSection title="SubAgentes" count={hasSearch ? subagentSessions.length : summary?.subagents ?? subagentSessions.length} collapsed={sectionsCollapsed.subagents} onToggle={() => toggleSection("subagents")}>
       {subagentSessions.map(renderSessionItem)}
       {!loading && !subagentSessions.length && <Box className="chat-empty">Nenhuma sub-sessão criada por outro agente.</Box>}
     </ChatSection>
@@ -981,13 +983,13 @@ function ConsoleApp() {
   const toggleMic = () => setMicEnabled((current) => !current);
   const [agents, setAgents] = useState<ApiAgent[]>([]); const [models, setModels] = useState<ApiModel[]>([]); const [sessions, setSessions] = useState<ApiSession[]>([]); const [messages, setMessages] = useState<ApiMessage[]>([]);
   const [status, setStatus] = useState<GatewayStatus>(); const [agentId, setAgentId] = useState(() => loadSavedUiState().agentId); const [sessionKey, setSessionKey] = useState(() => loadSavedUiState().sessionKey); const currentSessionKeyRef = useRef(""); const initialRestoreRef = useRef(true); const [sessionId, setSessionId] = useState<string>();
-  const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true); const [sessionsLoading, setSessionsLoading] = useState(false); const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false); const [sessionsHasMore, setSessionsHasMore] = useState(false); const [sessionsNextOffset, setSessionsNextOffset] = useState(0); const [sessionSearchInput, setSessionSearchInput] = useState(""); const [sessionSearch, setSessionSearch] = useState(""); const [historyLoading, setHistoryLoading] = useState(false); const [error, setError] = useState("");
   const [processing, setProcessing] = useState(false); const processingBySessionRef = useRef(new Map<string, boolean>()); const [processingAgentIds, setProcessingAgentIds] = useState<Set<string>>(() => new Set());
   const [detailsModalOpen, setDetailsModalOpen] = useState(false); const [detailsForSession, setDetailsForSession] = useState<ApiSession | undefined>();
   const [notifications, setNotifications] = useState<ApiNotification[]>([]); const [notificationsAnchor, setNotificationsAnchor] = useState<HTMLElement | null>(null);
   const [sessionSummaries, setSessionSummaries] = useState<Record<string, ApiSessionSummary>>({});
   const lastSessionByAgentRef = useRef(new Map<string, string>());
-  const sessionLoadsRef = useRef(new Map<string, Promise<void>>());
+  const sessionLoadsRef = useRef(new Map<string, Promise<void>>()); const sessionLoadVersionRef = useRef(new Map<string, number>());
   const notificationsRef = useRef<ApiNotification[]>([]); const agentsRef = useRef<ApiAgent[]>([]);
   // Notificações aguardando o agente PARAR de processar (hasActiveRun false) para serem exibidas.
   const pendingNotificationsRef = useRef(new Map<string, ApiNotification>());
@@ -1121,11 +1123,59 @@ function ConsoleApp() {
   const openNotification = useCallback((session: ApiSession) => { const targetAgentId = sessionAgentId(session) ?? session.agentId; setAgentId(targetAgentId); setSessionKey(session.key); setView("conversations"); setNotificationsAnchor(null); void markNotificationsRead([session]); }, [markNotificationsRead]);
   const loadRoot = useCallback(async () => { setLoading(true); setError(""); try { const nextStatus = await api.status(); gatewayConnectedRef.current = nextStatus.connected; setStatus(nextStatus); if (!nextStatus.connected) return; const [nextAgents, nextModels] = await Promise.all([api.agents(), api.models()]); setAgents(nextAgents); setModels(nextModels); setAgentId((current) => current && nextAgents.some((a) => a.id === current) ? current : nextAgents[0]?.id ?? ""); void loadAgentActivity(nextAgents); void loadNotifications(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [loadAgentActivity, loadNotifications]);
   const setSessionProcessing = useCallback((key: string, active: boolean) => { processingBySessionRef.current.set(key, active); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key && session.hasActiveRun !== active ? { ...session, hasActiveRun: active } : session)); }, [refreshProcessingAgents]);
-  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => { if (!nextAgentId) return; if (!append) { const running = sessionLoadsRef.current.get(nextAgentId); if (running) return running; } const task = (async () => { if (!append) { try { const cached = await readCachedSessions(nextAgentId); if (cached.length) { setSessions(cached); setSessionsNextOffset(cached.length); setSessionKey((current) => lastSessionByAgentRef.current.get(nextAgentId) ?? (cached.some((s) => s.key === current) ? current : cached[0]?.key ?? "")); } } catch { /* IndexedDB é opcional */ } } append ? setSessionsLoadingMore(true) : setSessionsLoading(true); setError(""); try { const page = await api.sessions(nextAgentId, offset, 50); const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId); await saveSessions(rows); for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun); refreshProcessingAgents(); setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows); setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length)); setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length); if (!append) setSessionKey((current) => lastSessionByAgentRef.current.get(nextAgentId) ?? (rows.some((s) => s.key === current) ? current : rows[0]?.key ?? "")); } catch (e) { if (!append) setError(e instanceof Error ? e.message : String(e)); } finally { append ? setSessionsLoadingMore(false) : setSessionsLoading(false); } })(); if (!append) sessionLoadsRef.current.set(nextAgentId, task); try { await task; } finally { if (!append) sessionLoadsRef.current.delete(nextAgentId); } }, [refreshProcessingAgents]);
+  const loadSessions = useCallback(async (nextAgentId: string, offset = 0, append = false) => {
+    if (!nextAgentId) return;
+    const queryKey = `${nextAgentId}:${sessionSearch}`;
+    const version = append ? (sessionLoadVersionRef.current.get(nextAgentId) ?? 0) : (sessionLoadVersionRef.current.get(nextAgentId) ?? 0) + 1;
+    if (!append) sessionLoadVersionRef.current.set(nextAgentId, version);
+    const isCurrent = () => sessionLoadVersionRef.current.get(nextAgentId) === version;
+    if (!append) {
+      const running = sessionLoadsRef.current.get(queryKey);
+      if (running) return running;
+    }
+    const task = (async () => {
+      append ? setSessionsLoadingMore(true) : setSessionsLoading(true);
+      setError("");
+      if (!append && sessionSearch) {
+        setSessions([]);
+        setSessionsHasMore(false);
+        setSessionsNextOffset(0);
+        setSessionKey("");
+      }
+      if (!append && !sessionSearch) {
+        try {
+          const cached = await readCachedSessions(nextAgentId);
+          if (isCurrent() && cached.length) {
+            setSessions(cached); setSessionsNextOffset(cached.length);
+            setSessionKey((current) => lastSessionByAgentRef.current.get(nextAgentId) ?? (cached.some((s) => s.key === current) ? current : cached[0]?.key ?? ""));
+          }
+        } catch { /* IndexedDB é opcional */ }
+      }
+      try {
+        const page = await api.sessions(nextAgentId, offset, 50, sessionSearch);
+        if (!isCurrent()) return;
+        const rows = page.sessions.filter((session) => sessionAgentId(session) === nextAgentId);
+        await saveSessions(rows);
+        for (const row of rows) processingBySessionRef.current.set(row.key, row.hasActiveRun);
+        refreshProcessingAgents();
+        setSessions((current) => append ? [...current, ...rows.filter((row) => !current.some((existing) => existing.key === row.key))] : rows);
+        setSessionsHasMore(page.hasMore ?? offset + page.sessions.length < (page.totalCount ?? offset + page.sessions.length));
+        setSessionsNextOffset(page.nextOffset ?? offset + page.sessions.length);
+        if (!append) setSessionKey((current) => sessionSearch ? rows[0]?.key ?? "" : lastSessionByAgentRef.current.get(nextAgentId) ?? (rows.some((s) => s.key === current) ? current : rows[0]?.key ?? ""));
+      } catch (e) {
+        if (isCurrent() && !append) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (isCurrent()) append ? setSessionsLoadingMore(false) : setSessionsLoading(false);
+      }
+    })();
+    if (!append) sessionLoadsRef.current.set(queryKey, task);
+    try { await task; } finally { if (!append) sessionLoadsRef.current.delete(queryKey); }
+  }, [refreshProcessingAgents, sessionSearch]);
   const refreshSessionMetadata = useCallback(async (key: string, id: string) => { try { const page = await api.sessions(id, 0, 200); const fresh = page.sessions.find((session) => session.key === key); if (!fresh) return; processingBySessionRef.current.set(key, fresh.hasActiveRun); refreshProcessingAgents(); setSessions((current) => current.map((session) => session.key === key ? { ...session, ...fresh } : session)); } catch { /* A próxima atualização SSE ou sondagem reconciliará os metadados. */ } }, [refreshProcessingAgents]);
   const loadHistory = useCallback(async (key: string, id: string, options?: { silent?: boolean }) => { if (!key || !id) return; setHistoryLoading(true); try { const history = await api.history(key, id); const pending = optimisticMessagesRef.current.get(key) ?? []; const unresolved = pending.filter((optimistic) => !history.messages.some((stored) => stored.role === "user" && stored.content === optimistic.content)); if (unresolved.length) optimisticMessagesRef.current.set(key, unresolved); else optimisticMessagesRef.current.delete(key); setMessages(mergePendingMessages(history.messages, unresolved)); setSessionId(history.sessionId); setStreamText(""); terminalTextRef.current = undefined; /* a resposta persistida assume a key fixa "live-stream" no render, reutilizando a mesma bolha do streaming sem remontar */ } catch (e) { const detail = e instanceof Error ? e.message : String(e); console.warn("Falha ao sincronizar o histórico do chat:", detail); if (!options?.silent) setError(detail); } finally { setHistoryLoading(false); } }, []);
   useEffect(() => { void loadRoot(); }, [loadRoot]);
   useEffect(() => { const resize = () => setViewportWidth(window.innerWidth); window.addEventListener("resize", resize); return () => window.removeEventListener("resize", resize); }, []);
+  useEffect(() => { const timer = window.setTimeout(() => setSessionSearch(sessionSearchInput.trim()), 300); return () => window.clearTimeout(timer); }, [sessionSearchInput]);
   useEffect(() => { localStorage.setItem(shortcutStorageKey, sendShortcut); }, [sendShortcut]);
   useEffect(() => { localStorage.setItem(chatsVisibleStorageKey, String(chatsVisible)); }, [chatsVisible]);
   useEffect(() => { try { localStorage.setItem(uiStateStorageKey, JSON.stringify({ agentId, sessionKey })); } catch { /* armazenamento indisponível */ } }, [agentId, sessionKey]);
@@ -1269,7 +1319,7 @@ function ConsoleApp() {
       {!connected ? <GatewayOfflinePane status={status} /> : <>
         {isNarrow ? (
           <>
-            {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+            {chatsVisible && <Box className="chats-overlay" onClick={(event) => { if (event.target === event.currentTarget) setChatsVisible(false); }}><ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} search={sessionSearchInput} onSearchChange={setSessionSearchInput} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => { setSessionKey(s.key); setChatsVisible(false); }} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} onClose={() => setChatsVisible(false)} /></Box>}
             <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} mobile onToggleChats={() => setChatsVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => { setChatsVisible(false); setDetailsModalOpen(true); }} ttsEnabled={tts.enabled} ttsMode={tts.mode} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} onToggleTtsMode={tts.toggleMode} micEnabled={micEnabled} onToggleMic={toggleMic} />
@@ -1279,7 +1329,7 @@ function ConsoleApp() {
             {/* A track do meio precisa de um filho SEMPRE: quando colapsada, um placeholder
                 vazio ocupa a coluna de 0px e mantém o ChatPane na 3ª track. Sem ele, o grid
                 auto-placed joga o ChatPane na track de 0px e quebra o layout inteiro. */}
-            {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
+            {chatsColumnVisible ? <ChatsPanel agents={agentsByRecent} selectedAgentId={agentId} onAgentSelect={setAgentId} sessions={sessions} summary={sessionSummaries[agentId]} selected={selectedSession} search={sessionSearchInput} onSearchChange={setSessionSearchInput} loading={sessionsLoading} loadingMore={sessionsLoadingMore} hasMore={sessionsHasMore}
               onSelect={(s) => setSessionKey(s.key)} onCreate={() => void create(agentId)} onLoadMore={loadMoreSessions}
               onRename={(s) => void renameSession(s)} onDelete={(s) => void deleteSession(s)} onToggleHidden={(s) => void toggleHiddenSession(s)} onShowDetails={(s) => { setDetailsForSession(s); setDetailsModalOpen(true); }} /> : <Box className="chats-panel-placeholder" />}
             <ChatPane key={selectedSession?.key ?? "empty-chat"} agent={selectedAgent} session={selectedSession} messages={messages} loading={historyLoading} processing={processing} streamText={streamText} sendShortcut={sendShortcut} models={models} initialDraft={draftsRef.current.get(sessionKey) ?? ""} onDraftChange={(text) => { if (sessionKey) draftsRef.current.set(sessionKey, text); }} onShortcutChange={setSendShortcut} onSend={send} onModelChange={(ref) => selectedSession ? changeSessionModel(selectedSession, ref) : Promise.resolve()} onAbort={abort} onFork={() => void fork()} onShowDetails={() => setDetailsModalOpen(true)} onToggleChats={() => setChatsColumnVisible((v) => !v)} onVoiceNavigate={voiceNavigateAgent} onVoiceOpenAgent={openAgentChat} ttsEnabled={tts.enabled} ttsMode={tts.mode} ttsSpeaking={tts.speaking} ttsSupported={tts.supported} onToggleTts={tts.toggle} onToggleTtsMode={tts.toggleMode} micEnabled={micEnabled} onToggleMic={toggleMic} />

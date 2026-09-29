@@ -41,7 +41,7 @@ export const api = {
   deleteAgent: (input: { agentId: string; deleteFiles?: boolean }) => client.deleteAgent({ deleteFiles: false, ...input }),
   agentContextFiles: (agentId: string) => client.getAgentContextFiles(agentId),
   updateAgentContextFiles: (agentId: string, files: Array<{ name: AgentContextFile["name"]; content: string }>) => client.updateAgentContextFiles({ agentId, files }),
-  sessions: (agentId: string, offset = 0, limit = 10) => client.listSessions({ agentId, limit, offset }),
+  sessions: (agentId: string, offset = 0, limit = 10, search?: string) => client.listSessions({ agentId, limit, offset, ...(search ? { search } : {}) }),
   sessionSummaries: (agentIds?: string[]) => client.listSessionSummaries(agentIds),
   notifications: async () => (await client.listNotifications()).notifications,
   history: async (sessionKey: string, agentId: string) => {
