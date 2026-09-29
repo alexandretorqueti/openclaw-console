@@ -1,34 +1,97 @@
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { realpath } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { z, ZodError, type ZodType } from "zod";
 import {
   AgentContextFileNameSchema, AgentContextFilesResponseSchema,
-  ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatSendRequestSchema, CreateSessionRequestSchema,
+  ChatAbortRequestSchema, ChatHistoryQuerySchema, ChatMessageGetQuerySchema, ChatMessageGetResponseSchema, ChatSendRequestSchema, CreateSessionRequestSchema,
   CreateAgentRequestSchema, DeleteAgentRequestSchema, DeleteSessionRequestSchema, ForkSessionRequestSchema, GatewayStatusSchema, PatchSessionRequestSchema,
   ModelsResponseSchema,
-  SessionChangedEventSchema, SessionsQuerySchema,
+  SessionSummarySchema, SessionSummariesResponseSchema,
+  NotificationItemSchema, NotificationsResponseSchema,
+  SessionChangedEventSchema, SessionsDescribeQuerySchema, SessionsQuerySchema,
   UpdateAgentContextFilesRequestSchema, UpdateAgentContextFilesResponseSchema, UpdateAgentRequestSchema,
   type GatewayStatus,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } from "@alexandretorqueti/openclaw-gateway-client";
-import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeSessions, record } from "./normalizers.js";
+import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
 const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
+const speechSummaryModel = "qwen3.5:9b";
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
+const gatewayAgentWorkspaceRoot = process.env.OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
+const sessionWorkspaceRoot = process.env.OPENCLAW_SESSION_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
+const elevenlabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
 const startedAt = Date.now();
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info", redact: ["req.headers.authorization"] } });
+const app = Fastify({
+  logger: {
+    level: process.env.LOG_LEVEL ?? "info",
+    redact: ["req.headers.authorization"],
+    serializers: {
+      req(req) {
+        return {
+          method: req.method,
+          url: typeof req.url === "string" ? req.url.replace(/([?&]token=)[^&\s]+/g, "$1***") : req.url,
+          hostname: req.hostname,
+        };
+      },
+    },
+  },
+});
+const allowedCorsOrigin = (origin: string | undefined): boolean => {
+  if (!origin) return false;
+  if (origin === "https://ia.globaltecnologia.net") return true;
+  if (origin === "https://openclaw-console.pages.dev") return true;
+  if (origin.endsWith(".openclaw-console.pages.dev")) return true;
+  if (origin === "https://openclaw-api.webconnect.com.br") return true;
+  return false;
+};
+const buildCorsHeaders = (origin: string | undefined): Record<string, string> => {
+  if (!allowedCorsOrigin(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin as string,
+    "Vary": "Origin",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+  };
+};
+app.addHook("onRequest", async (request, reply) => {
+  const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+  for (const [key, value] of Object.entries(buildCorsHeaders(origin))) reply.header(key, value);
+  if (request.method === "OPTIONS") { reply.code(204).send(); return; }
+});
+const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN?.trim();
+if (!consoleToken) app.log.warn("OPENCLAW_CONSOLE_TOKEN is not set; /api endpoints are UNPROTECTED");
+if (!elevenlabsApiKey) app.log.warn("ELEVENLABS_API_KEY is not set; POST /api/tts responderá 503");
+const extractConsoleToken = (request: FastifyRequest): string | undefined => {
+  const auth = request.headers.authorization;
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  const query = request.query as Record<string, unknown>;
+  if (typeof query.token === "string") return query.token.trim();
+  return undefined;
+};
+app.addHook("onRequest", async (request, reply) => {
+  const path = request.url.split("?")[0];
+  if (!path.startsWith("/api/")) return;
+  if (!consoleToken) return;
+  if (extractConsoleToken(request) !== consoleToken) {
+    reply.code(401).send({ error: { code: "UNAUTHORIZED", message: "Invalid or missing access token" } });
+    return;
+  }
+});
 const gateway = new GatewayClient({
   url: gatewayUrl,
   token,
@@ -80,8 +143,16 @@ gateway.on("event", (frame: GatewayEventFrame) => {
   const event = normalizeChatEvent(frame); if (event) sse("chat", event);
   if (frame.event === "sessions.changed") {
     const payload = record(frame.payload);
-    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens"].some((key) => key in payload);
-    const normalized = hasSessionData ? normalizeSessions({ sessions: [payload] }).sessions[0] : undefined;
+    // O gateway aninha a sessão em payload.session (buildSessionEventSnapshot /
+    // buildGatewaySessionSnapshot); campos como unread, lastReadAt, lastActivityAt,
+    // lastMessagePreview e archived só existem dentro desse objeto aninhado.
+    // Normalizar o objeto aninhado quando presente; senão, cair no envelope.
+    const nestedSession = payload.session !== null && typeof payload.session === "object" && !Array.isArray(payload.session)
+      ? (payload.session as Record<string, unknown>)
+      : undefined;
+    const sessionSource = nestedSession ?? payload;
+    const hasSessionData = ["active", "hasActiveRun", "model", "modelProvider", "label", "displayName", "title", "sessionId", "updatedAt", "updatedAtMs", "contextTokens", "totalTokens", "unread", "lastReadAt", "lastActivityAt", "lastMessagePreview", "archived"].some((key) => key in sessionSource);
+    const normalized = hasSessionData ? normalizeSessions({ sessions: [sessionSource] }).sessions[0] : undefined;
     const changed = SessionChangedEventSchema.safeParse({ sessionKey: typeof payload.sessionKey === "string" ? payload.sessionKey : typeof payload.key === "string" ? payload.key : undefined, agentId: typeof payload.agentId === "string" ? payload.agentId : undefined, reason: typeof payload.reason === "string" ? payload.reason : "changed", ...(normalized ? { session: normalized } : {}) });
     if (changed.success) sse("sessions", changed.data);
   }
@@ -116,7 +187,7 @@ async function ollamaModelSizes() {
 app.setErrorHandler((error, _request, reply) => {
   if (error instanceof ZodError) return reply.code(400).send({ error: { code: "VALIDATION_ERROR", message: "Invalid request", issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })) } });
   const code = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : "INTERNAL_ERROR";
-  const http = code === "UNAVAILABLE" ? 503 : code === "TIMEOUT" ? 504 : 500;
+  const http = code === "UNAVAILABLE" ? 503 : code === "TIMEOUT" ? 504 : code === "NOT_FOUND" ? 404 : 500;
   app.log.error({ err: error, code }, "request failed");
   return reply.code(http).send({ error: { code, message: error instanceof Error ? error.message : String(error) } });
 });
@@ -136,9 +207,102 @@ app.get("/api/models", async () => {
   });
   return ModelsResponseSchema.parse({ models });
 });
+const SpeechSummaryRequestSchema = z.object({ text: z.string().trim().min(1).max(20_000) }).strict();
+app.post("/api/speech-summary", async (request, reply) => {
+  const body = parse(SpeechSummaryRequestSchema, request.body);
+  const upstream = await fetch(`${ollamaUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: speechSummaryModel,
+      stream: false,
+      think: false,
+      options: { temperature: 0.2 },
+      prompt: [
+        "Você é um resumidor para leitura em voz alta.",
+        "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
+        "Escreva em português brasileiro, em no máximo 3 frases curtas.",
+        "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
+        "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
+        "Texto para resumir:",
+        body.text,
+      ].join("\n\n"),
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 300);
+    app.log.warn({ status: upstream.status, detail, model: speechSummaryModel }, "Ollama speech summary failed");
+    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
+  }
+  const payload = record(await upstream.json());
+  const summary = typeof payload.response === "string" ? payload.response.trim() : "";
+  if (!summary) throw Object.assign(new Error("Ollama não retornou um resumo"), { code: "UPSTREAM_ERROR" });
+  return { summary };
+});
+const TtsRequestSchema = z.object({
+  text: z.string().trim().min(1).max(5000),
+  voiceId: z.string().trim().min(1).default("JBFqnCBsd6RMkjVDRZzb"),
+  modelId: z.string().trim().min(1).default("eleven_multilingual_v2"),
+}).strict();
+app.post("/api/tts", async (request, reply) => {
+  if (!elevenlabsApiKey) throw Object.assign(new Error("ELEVENLABS_API_KEY não configurada no servidor"), { code: "UNAVAILABLE" });
+  const body = parse(TtsRequestSchema, request.body);
+  const voiceId = body.voiceId ?? "JBFqnCBsd6RMkjVDRZzb";
+  const modelId = body.modelId ?? "eleven_multilingual_v2";
+  const upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
+    method: "POST",
+    headers: { "xi-api-key": elevenlabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
+    body: JSON.stringify({ text: body.text, model_id: modelId }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!upstream.ok) {
+    const detail = (await upstream.text()).slice(0, 500);
+    app.log.error({ status: upstream.status, detail }, "ElevenLabs TTS upstream failed");
+    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `ElevenLabs TTS error ${upstream.status}` } });
+  }
+  const audio = Buffer.from(await upstream.arrayBuffer());
+  reply.header("Content-Type", "audio/mpeg");
+  reply.header("Cache-Control", "no-store");
+  return reply.send(audio);
+});
+
+async function assertValidSessionWorkspacePath(workspacePath: string): Promise<void> {
+  if (!isAbsolute(workspacePath)) {
+    throw Object.assign(new Error("workspacePath must be an absolute path"), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  if (workspacePath.includes("\0")) {
+    throw Object.assign(new Error("workspacePath must not contain null bytes"), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  const resolved = resolve(workspacePath);
+  const rootResolved = resolve(sessionWorkspaceRoot);
+  const pathFromRoot = relative(rootResolved, resolved);
+  if (!pathFromRoot || pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
+    throw Object.assign(new Error(`workspacePath must be a descendant of ${rootResolved}`), { code: "INVALID_WORKSPACE_PATH" });
+  }
+  // Resolve realpath to prevent symlink escape
+  try {
+    const realPath = await realpath(resolved);
+    const realRoot = await realpath(rootResolved);
+    const realRelative = relative(realRoot, realPath);
+    if (!realRelative || realRelative === ".." || realRelative.startsWith(`..${sep}`) || isAbsolute(realRelative)) {
+      throw Object.assign(new Error(`workspacePath resolves outside ${realRoot} via symlink`), { code: "INVALID_WORKSPACE_PATH" });
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "INVALID_WORKSPACE_PATH") throw error;
+    // Path doesn't exist yet — that's OK, we already validated the logical path
+  }
+}
+
 app.post("/api/agents", async (request) => {
   const body = parse(CreateAgentRequestSchema, request.body);
-  await ensureProjectsLink({ workspace: body.workspace, workspaceRoot: defaultAgentWorkspaceRoot, projectsPath: sharedProjectsPath });
+  const localRelative = relative(resolve(defaultAgentWorkspaceRoot), resolve(body.workspace));
+  const gatewayRelative = relative(resolve(gatewayAgentWorkspaceRoot), resolve(body.workspace));
+  if (localRelative !== "" && !localRelative.startsWith("..") && !isAbsolute(localRelative)) {
+    await ensureProjectsLink({ workspace: body.workspace, workspaceRoot: defaultAgentWorkspaceRoot, projectsPath: sharedProjectsPath });
+  } else if (gatewayRelative === "" || gatewayRelative.startsWith("..") || isAbsolute(gatewayRelative)) {
+    throw Object.assign(new Error(`Agent workspace must be a descendant of ${gatewayAgentWorkspaceRoot}`), { code: "INVALID_WORKSPACE_PATH" });
+  }
   const payload = record(await rpc("agents.create", body));
   return { ok: true as const, agentId: typeof payload.agentId === "string" ? payload.agentId : body.name };
 });
@@ -177,15 +341,72 @@ app.get("/api/sessions", async (request) => {
   const query = parse(SessionsQuerySchema, request.query);
   return normalizeSessions(await rpc("sessions.list", { ...query, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true }));
 });
+app.get("/api/sessions/summary", async (request) => {
+  const raw = record(request.query);
+  const requested = typeof raw.agentId === "string" ? raw.agentId.split(",").map((id) => id.trim()).filter(Boolean) : [];
+  const agents = requested.length ? requested : normalizeAgents(await rpc("agents.list", {})).agents.map((agent) => agent.id);
+  const pages = await Promise.all(agents.map(async (agentId) => {
+    const payload = await rpc("sessions.list", { agentId, limit: 1000, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: false });
+    return { agentId, sessions: normalizeSessions(payload).sessions };
+  }));
+  const summaries = pages.map(({ agentId, sessions }) => {
+    const counts = { chats: 0, tasks: 0, groups: 0, subagents: 0, archived: 0 };
+    for (const session of sessions) {
+      if (session.archived) { counts.archived += 1; continue; }
+      if (session.parentSessionKey) counts.subagents += 1;
+      else if (session.key.includes(":group:")) counts.groups += 1;
+      else if (/^(dev-|analysis-|\[TAREFA\])/i.test(session.label ?? session.title ?? session.key)) counts.tasks += 1;
+      else counts.chats += 1;
+    }
+    const latestActivityAt = sessions.reduce((latest, session) => Math.max(latest, session.lastActivityAt ?? session.updatedAt ?? 0), 0) || undefined;
+    return SessionSummarySchema.parse({ agentId, ...counts, ...(latestActivityAt === undefined ? {} : { latestActivityAt }), generatedAt: Date.now() });
+  });
+  return SessionSummariesResponseSchema.parse({ summaries });
+});
+app.get("/api/notifications", async () => {
+  const agents = normalizeAgents(await rpc("agents.list", {})).agents;
+  const pages = await Promise.allSettled(agents.map((agent) => rpc("sessions.list", { agentId: agent.id, limit: 200, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true })));
+  const notifications = [];
+  for (let index = 0; index < agents.length; index += 1) {
+    const agent = agents[index];
+    const result = pages[index];
+    if (!agent || result.status !== "fulfilled") continue;
+    const normalized = normalizeSessions(result.value);
+    for (const session of normalized.sessions) {
+      if (session.archived) continue;
+      const unread = session.unread === true || (session.lastReadAt === undefined && session.lastActivityAt !== undefined);
+      if (!unread) continue;
+      notifications.push(NotificationItemSchema.parse({ session, agent }));
+    }
+  }
+  notifications.sort((a, b) => (b.session.lastActivityAt ?? b.session.updatedAt ?? 0) - (a.session.lastActivityAt ?? a.session.updatedAt ?? 0));
+  return NotificationsResponseSchema.parse({ notifications });
+});
 app.get("/api/chat/history", async (request) => {
   const query = parse(ChatHistoryQuerySchema, request.query);
   const agentId = canonicalAgentId(query.sessionKey, query.agentId);
   const payload = await rpc("chat.history", { sessionKey: query.sessionKey, ...(agentId ? { agentId } : {}), limit: query.limit, offset: query.offset });
   return normalizeHistory(payload, query.sessionKey);
 });
+app.get("/api/chat/message", async (request) => {
+  const query = parse(ChatMessageGetQuerySchema, request.query);
+  const agentId = canonicalAgentId(query.sessionKey, query.agentId);
+  const payload = record(await rpc("chat.message.get", {
+    sessionKey: query.sessionKey,
+    ...(agentId ? { agentId } : {}),
+    messageId: query.messageId,
+    maxChars: query.maxChars,
+  }));
+  const message = payload.message === undefined ? undefined : normalizeMessage(payload.message);
+  return ChatMessageGetResponseSchema.parse({
+    ok: payload.ok === true,
+    ...(message ? { message } : {}),
+    ...(typeof payload.unavailableReason === "string" ? { unavailableReason: payload.unavailableReason } : {}),
+  });
+});
 app.post("/api/chat/send", async (request) => {
   const body = parse(ChatSendRequestSchema, request.body);
-  const payload = record(await rpc("chat.send", { ...body, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: randomUUID() }));
+  const payload = record(await rpc("chat.send", { ...body, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: body.idempotencyKey ?? randomUUID() }));
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   if (!runId) throw new Error("Gateway did not return a runId");
   return { runId, ...(typeof payload.status === "string" ? { status: payload.status } : {}) };
@@ -196,9 +417,55 @@ app.post("/api/chat/abort", async (request) => {
   const runIds = Array.isArray(payload.runIds) ? payload.runIds.filter((value): value is string => typeof value === "string") : undefined;
   return { ok: typeof payload.ok === "boolean" ? payload.ok : true, aborted: typeof payload.aborted === "boolean" ? payload.aborted : (runIds?.length ?? 0) > 0, ...(runIds ? { runIds } : {}) };
 });
-app.post("/api/sessions", async (request) => { const body = parse(CreateSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", body), body.key); });
+app.post("/api/sessions", async (request) => {
+  const body = parse(CreateSessionRequestSchema, request.body);
+  const { workspacePath, ...createBody } = body;
+  if (workspacePath !== undefined) {
+    await assertValidSessionWorkspacePath(workspacePath);
+  }
+  const result = await rpc("sessions.create", createBody);
+  const response = mutation(result, body.key);
+  if (workspacePath !== undefined && typeof response.key === "string") {
+    await rpc("sessions.patch", {
+      key: response.key,
+      ...(body.agentId ? { agentId: body.agentId } : {}),
+      spawnedCwd: workspacePath,
+    });
+  }
+  return response;
+});
 app.post("/api/sessions/fork", async (request) => { const body = parse(ForkSessionRequestSchema, request.body); return mutation(await rpc("sessions.create", { ...body, agentId: canonicalAgentId(body.parentSessionKey, body.agentId), fork: true }), body.key); });
 app.patch("/api/sessions", async (request) => { const body = parse(PatchSessionRequestSchema, request.body); return mutation(await rpc("sessions.patch", { ...body, agentId: canonicalAgentId(body.key, body.agentId) }), body.key); });
+app.get("/api/sessions/describe", async (request) => {
+  const query = parse(SessionsDescribeQuerySchema, request.query);
+  // Nota: o gateway rejeita `agentId` em sessions.describe ("unexpected property");
+  // a chave já codifica o agente. `agentId` fica no contrato p/ compatibilidade,
+  // mas não é repassado ao RPC.
+  const payload = record(await rpc("sessions.describe", { key: query.key }));
+  let session = payload.session !== null && payload.session !== undefined && typeof payload.session === "object" && !Array.isArray(payload.session)
+    ? record(payload.session)
+    : undefined;
+  // Fallback: o gateway pode devolver session:null no describe (resolução de store
+  // por agente) enquanto o sessions.list (store combinado) enxerga a sessão.
+  // A linha do list contém os mesmos campos (status/startedAt/endedAt/hasActiveRun).
+  // Nota: usar configuredAgentsOnly — sem ele a listagem degradada não contém a sessão.
+  if (!session) {
+    const list = record(await rpc("sessions.list", { limit: 200, offset: 0, configuredAgentsOnly: true, includeDerivedTitles: true, includeLastMessage: true }));
+    const rows = Array.isArray(list.sessions) ? list.sessions : [];
+    const match = rows.find((row) => record(row).key === query.key);
+    if (match !== undefined) session = record(match);
+  }
+  if (!session) {
+    throw Object.assign(new Error(`Session not found: ${query.key}`), { code: "NOT_FOUND" });
+  }
+  // Passthrough: campos achatados no topo, null/undefined normalizados para
+  // ausente. O loader do motor lê startedAt/endedAt numéricos e trata ausência
+  // como "sem valor" — um null quebraria a detecção de atividade.
+  const body: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(session)) if (value !== null && value !== undefined) body[field] = value;
+  if (typeof body.key !== "string" || body.key.length === 0) body.key = query.key;
+  return body;
+});
 app.delete("/api/sessions", async (request) => {
   const body = parse(DeleteSessionRequestSchema, request.body);
   const agentId = canonicalAgentId(body.key, body.agentId);
@@ -208,7 +475,8 @@ app.delete("/api/sessions", async (request) => {
 });
 app.get("/api/events", async (request: FastifyRequest, reply: FastifyReply) => {
   reply.hijack();
-  reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+  const sseOrigin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+  reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no", ...buildCorsHeaders(sseOrigin) });
   sseClients.add(reply.raw); reply.raw.write(`event: status\ndata: ${JSON.stringify(status())}\n\n`);
   const heartbeat = setInterval(() => { try { reply.raw.write(": keepalive\n\n"); } catch { clearInterval(heartbeat); } }, 15_000);
   request.raw.on("close", () => { clearInterval(heartbeat); sseClients.delete(reply.raw); });

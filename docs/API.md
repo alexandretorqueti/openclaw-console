@@ -28,6 +28,11 @@ Antes de `agents.create`, o BFF prepara o workspace e cria o link simbólico
 dentro de `OPENCLAW_AGENT_WORKSPACE_ROOT`; entradas existentes nunca são
 substituídas. Um conflito impede a criação do agente.
 
+Workspaces pertencentes ao Gateway em `/data/workspace/projects/agentes` são
+aceitos mesmo quando esse volume não está montado no BFF; nesse caso o Gateway
+é responsável por criar o workspace. Outros caminhos externos continuam
+recusados.
+
 Arquivos aceitos: `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` e `MEMORY.md`.
 
 ## Sessões
@@ -47,10 +52,14 @@ O BFF extrai o agente da session key para operações sobre sessões existentes.
 | Método | Rota | Contrato |
 |---|---|---|
 | `GET` | `/api/chat/history` | `ChatHistoryQuerySchema` → `ChatHistoryResponseSchema` |
+| `GET` | `/api/chat/message` | recupera pelo ID uma mensagem integral truncada em `chat.history` |
 | `POST` | `/api/chat/send` | `ChatSendRequestSchema` → `ChatSendResponseSchema` |
 | `POST` | `/api/chat/abort` | `ChatAbortRequestSchema` → `ChatAbortResponseSchema` |
+| `GET` | `/api/sessions/describe?key=...` | `SessionsDescribeQuerySchema` → gateway passthrough |
 
-`chat.send` recebe uma idempotency key gerada pelo servidor. Comandos como `/model` continuam sendo enviados como mensagens normais; o frontend atualiza os metadados da sessão após o comando.
+`chat.send` aceita `idempotencyKey` opcional. Quando omitida, o BFF gera uma UUID; quando fornecida, ela é encaminhada ao gateway para que retries do motor não dupliquem a execução. Comandos como `/model` continuam sendo enviados como mensagens normais; o frontend atualiza os metadados da sessão após o comando.
+
+`sessions.describe` encaminha a consulta ao gateway e devolve os campos de atividade (`status`, `startedAt`, `endedAt`) junto com os campos adicionais disponíveis, sem normalização destrutiva.
 
 ## Eventos SSE
 

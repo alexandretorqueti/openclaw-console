@@ -122,7 +122,8 @@ export function normalizeSessions(payload: unknown): SessionsResponse {
       sessionId: text(row.sessionId), label: text(row.label), category: text(row.category),
       state: archived ? "archived" : active ? "active" : "idle",
       updatedAt: timestamp(row.updatedAt) ?? timestamp(row.updatedAtMs), createdAt: timestamp(row.createdAt) ?? timestamp(row.createdAtMs),
-      archived, pinned: bool(row.pinned) ?? false, unread: bool(row.unread) ?? false, hasActiveRun: active,
+      archived, pinned: bool(row.pinned) ?? false, unread: bool(row.unread) ?? false,
+      lastReadAt: timestamp(row.lastReadAt), lastActivityAt: timestamp(row.lastActivityAt), hasActiveRun: active,
       parentSessionKey: text(row.parentSessionKey) ?? text(row.forkedFromParent), spawnedBy: text(row.spawnedBy),
       model: normalizeModel(row.model), modelProvider: text(row.modelProvider), contextTokens, totalTokens,
       contextPercent: Math.max(0, Math.min(100, contextPercent)),
@@ -143,9 +144,18 @@ function agentFromKey(key?: string): string | undefined {
   return text(key.split(":")[1]);
 }
 
-export function normalizeMessage(value: unknown, index = 0): ChatMessage | undefined {
+export function normalizeMessage(value: unknown): ChatMessage | undefined {
   const row = record(value);
   const nested = record(row.message);
+  const gatewayMetadata = record(row.__openclaw);
+  // `chat.message.get` only accepts the Gateway's persisted message id. Do not
+  // manufacture one from the position/timestamp: it looks valid to consumers,
+  // but can never be used to retrieve a truncated message in full.
+  // Gateway history responses store the canonical id in `__openclaw.id`.
+  const id = text(row.id) ?? text(row.messageId) ?? text(row.message_id)
+    ?? text(nested.id) ?? text(nested.messageId)
+    ?? text(gatewayMetadata.id) ?? text(gatewayMetadata.messageId);
+  if (!id) return undefined;
   const roleValue = text(row.role) ?? text(nested.role) ?? "unknown";
   let role = normalizedRole(roleValue);
   const body = row.content ?? nested.content ?? row.text;
@@ -168,7 +178,7 @@ export function normalizeMessage(value: unknown, index = 0): ChatMessage | undef
   }
   const createdAt = timestamp(row.timestamp) ?? timestamp(row.createdAt) ?? timestamp(row.ts);
   const parsed = ChatMessageSchema.safeParse({
-    id: text(row.id) ?? text(row.messageId) ?? `${role}-${createdAt ?? index}-${index}`,
+    id,
     role, content, ...(thinking ? { thinking } : {}), author: text(row.author) ?? text(row.name), createdAt,
     runId: text(row.runId), status, stopReason: text(row.stopReason), toolName,
   });
@@ -181,7 +191,7 @@ export function normalizeHistory(payload: unknown, sessionKey: string) {
   return {
     sessionKey,
     ...(text(root.sessionId) ? { sessionId: text(root.sessionId) } : {}),
-    messages: rows.flatMap((value, index) => { const message = normalizeMessage(value, index); return message ? [message] : []; }),
+    messages: rows.flatMap((value) => { const message = normalizeMessage(value); return message ? [message] : []; }),
     ...(bool(root.hasMore) !== undefined ? { hasMore: bool(root.hasMore) } : {}),
     ...(number(root.nextOffset) !== undefined ? { nextOffset: number(root.nextOffset) } : {}),
   };

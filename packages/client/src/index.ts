@@ -3,12 +3,15 @@ import {
   AgentMutationResponseSchema,
   AgentContextFilesResponseSchema,
   ModelsResponseSchema,
+  NotificationsResponseSchema,
   ApiErrorSchema,
   ChatAbortRequestSchema,
   ChatAbortResponseSchema,
   ChatEventSchema,
   ChatHistoryQuerySchema,
   ChatHistoryResponseSchema,
+  ChatMessageGetQuerySchema,
+  ChatMessageGetResponseSchema,
   ChatSendRequestSchema,
   ChatSendResponseSchema,
   CreateSessionRequestSchema,
@@ -25,16 +28,22 @@ import {
   UpdateAgentContextFilesRequestSchema,
   UpdateAgentContextFilesResponseSchema,
   SessionsQuerySchema,
+  SessionsDescribeQuerySchema,
+  SessionsDescribeResponseSchema,
   SessionsResponseSchema,
+  SessionSummariesResponseSchema,
   type AgentsResponse,
   type AgentMutationResponse,
   type AgentContextFilesResponse,
   type ModelsResponse,
+  type NotificationsResponse,
   type ChatAbortRequest,
   type ChatAbortResponse,
   type ChatEvent,
   type ChatHistoryQuery,
   type ChatHistoryResponse,
+  type ChatMessageGetQuery,
+  type ChatMessageGetResponse,
   type ChatSendRequest,
   type ChatSendResponse,
   type CreateSessionRequest,
@@ -51,13 +60,18 @@ import {
   type UpdateAgentContextFilesRequest,
   type UpdateAgentContextFilesResponse,
   type SessionsQuery,
+  type SessionsDescribeQuery,
+  type SessionsDescribeResponse,
   type SessionsResponse,
+  type SessionSummariesResponse,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import type { ZodTypeAny } from "zod";
 
 export interface ConsoleClientOptions {
   /** Defaults to `/api`, allowing same-origin deployments with no browser secrets. */
   baseUrl?: string;
+  /** Bearer token sent as `Authorization` header on requests and `?token=` on the SSE stream. */
+  authToken?: string;
   fetch?: typeof globalThis.fetch;
   eventSource?: typeof globalThis.EventSource;
   headers?: HeadersInit;
@@ -92,12 +106,14 @@ export class ConsoleContractError extends Error {
 
 export class OpenClawConsoleClient {
   private readonly baseUrl: string;
+  private readonly authToken: string | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly EventSourceImpl: typeof globalThis.EventSource | undefined;
   private readonly headers: HeadersInit | undefined;
 
   constructor(options: ConsoleClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/$/, "");
+    this.authToken = options.authToken;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.EventSourceImpl = options.eventSource ?? globalThis.EventSource;
     this.headers = options.headers;
@@ -146,9 +162,23 @@ export class OpenClawConsoleClient {
     return this.get<SessionsResponse>(`/sessions?${toQueryString(parsed)}`, SessionsResponseSchema);
   }
 
+  listSessionSummaries(agentIds: string[] = []): Promise<SessionSummariesResponse> {
+    const query = agentIds.length ? `?agentId=${agentIds.map(encodeURIComponent).join(",")}` : "";
+    return this.get<SessionSummariesResponse>(`/sessions/summary${query}`, SessionSummariesResponseSchema);
+  }
+
+  listNotifications(): Promise<NotificationsResponse> {
+    return this.get<NotificationsResponse>("/notifications", NotificationsResponseSchema);
+  }
+
   getChatHistory(query: ChatHistoryQuery): Promise<ChatHistoryResponse> {
     const parsed = ChatHistoryQuerySchema.parse(query);
     return this.get<ChatHistoryResponse>(`/chat/history?${toQueryString(parsed)}`, ChatHistoryResponseSchema);
+  }
+
+  getChatMessage(query: ChatMessageGetQuery): Promise<ChatMessageGetResponse> {
+    const parsed = ChatMessageGetQuerySchema.parse(query);
+    return this.get<ChatMessageGetResponse>(`/chat/message?${toQueryString(parsed)}`, ChatMessageGetResponseSchema);
   }
 
   sendChat(request: ChatSendRequest): Promise<ChatSendResponse> {
@@ -195,9 +225,15 @@ export class OpenClawConsoleClient {
     );
   }
 
+  describeSession(query: SessionsDescribeQuery): Promise<SessionsDescribeResponse> {
+    const parsed = SessionsDescribeQuerySchema.parse(query);
+    return this.get<SessionsDescribeResponse>(`/sessions/describe?${toQueryString(parsed)}`, SessionsDescribeResponseSchema);
+  }
+
   subscribeEvents(handlers: ConsoleEventHandlers): () => void {
     if (!this.EventSourceImpl) throw new Error("EventSource is not available in this environment");
-    const source = new this.EventSourceImpl(this.url("/events"));
+    const eventsUrl = this.url("/events");
+    const source = new this.EventSourceImpl(this.authToken ? `${eventsUrl}?token=${encodeURIComponent(this.authToken)}` : eventsUrl);
     const chat = (event: MessageEvent<string>) => this.handleSseData(event.data, ChatEventSchema, handlers.onChat, handlers.onError);
     const status = (event: MessageEvent<string>) =>
       this.handleSseData(event.data, GatewayStatusSchema, handlers.onStatus, handlers.onError);
@@ -252,6 +288,7 @@ export class OpenClawConsoleClient {
   private async request<T>(path: string, init: RequestInit, schema: ZodTypeAny): Promise<T> {
     const headers = new Headers(this.headers);
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    if (this.authToken && !headers.has("authorization")) headers.set("Authorization", `Bearer ${this.authToken}`);
     const response = await this.fetchImpl(this.url(path), { ...init, headers });
     const value = await readJson(response);
     if (!response.ok) {

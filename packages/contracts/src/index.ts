@@ -119,6 +119,8 @@ export const SessionSchema = z
     archived: z.boolean().default(false),
     pinned: z.boolean().default(false),
     unread: z.boolean().default(false),
+    lastReadAt: OptionalTimestampSchema,
+    lastActivityAt: OptionalTimestampSchema,
     hasActiveRun: z.boolean().default(false),
     parentSessionKey: z.string().optional(),
     spawnedBy: z.string().optional(),
@@ -271,6 +273,36 @@ export const SessionsResponseSchema = z
   .strict();
 export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 
+export const SessionSummarySchema = z.object({
+  agentId: NonEmptyStringSchema,
+  chats: z.number().int().nonnegative(),
+  tasks: z.number().int().nonnegative(),
+  groups: z.number().int().nonnegative(),
+  subagents: z.number().int().nonnegative(),
+  archived: z.number().int().nonnegative(),
+  latestActivityAt: OptionalTimestampSchema,
+  generatedAt: z.number().int().nonnegative(),
+}).strict();
+export type SessionSummary = z.infer<typeof SessionSummarySchema>;
+
+export const SessionSummariesResponseSchema = z.object({ summaries: z.array(SessionSummarySchema) }).strict();
+export type SessionSummariesResponse = z.infer<typeof SessionSummariesResponseSchema>;
+
+export const NotificationItemSchema = z
+  .object({
+    session: SessionSchema,
+    agent: AgentSchema,
+  })
+  .strict();
+export type NotificationItem = z.infer<typeof NotificationItemSchema>;
+
+export const NotificationsResponseSchema = z
+  .object({
+    notifications: z.array(NotificationItemSchema),
+  })
+  .strict();
+export type NotificationsResponse = z.infer<typeof NotificationsResponseSchema>;
+
 export const ChatHistoryQuerySchema = z
   .object({
     sessionKey: NonEmptyStringSchema,
@@ -292,6 +324,21 @@ export const ChatHistoryResponseSchema = z
   .strict();
 export type ChatHistoryResponse = z.infer<typeof ChatHistoryResponseSchema>;
 
+export const ChatMessageGetQuerySchema = z.object({
+  sessionKey: NonEmptyStringSchema,
+  agentId: z.string().trim().min(1).optional(),
+  messageId: NonEmptyStringSchema,
+  maxChars: integerQuery(1, 500_000).default(500_000),
+}).strict();
+export type ChatMessageGetQuery = z.infer<typeof ChatMessageGetQuerySchema>;
+
+export const ChatMessageGetResponseSchema = z.object({
+  ok: z.boolean(),
+  message: ChatMessageSchema.optional(),
+  unavailableReason: z.enum(["not_found", "oversized", "not_visible"]).optional(),
+}).strict();
+export type ChatMessageGetResponse = z.infer<typeof ChatMessageGetResponseSchema>;
+
 export const ChatSendRequestSchema = z
   .object({
     sessionKey: NonEmptyStringSchema,
@@ -302,6 +349,9 @@ export const ChatSendRequestSchema = z
     fastMode: z.union([z.boolean(), z.literal("auto")]).optional(),
     timeoutMs: z.number().int().min(0).max(3_600_000).optional(),
     attachments: z.array(z.unknown()).max(20).optional(),
+    // Idempotency key supplied by the caller (the motor kernel generates its own UUID
+    // for retries). Optional: when absent the BFF generates one server-side.
+    idempotencyKey: z.string().trim().min(1).max(128).optional(),
   })
   .strict();
 export type ChatSendRequest = z.infer<typeof ChatSendRequestSchema>;
@@ -342,6 +392,7 @@ export const CreateSessionRequestSchema = z
     task: z.string().max(500_000).optional(),
     message: z.string().max(500_000).optional(),
     worktree: z.boolean().optional(),
+    workspacePath: z.string().max(4096).optional(),
   })
   .strict();
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>;
@@ -380,6 +431,7 @@ export const PatchSessionRequestSchema = z
     thinkingLevel: NullableNonEmptyStringSchema.optional(),
     fastMode: z.union([z.boolean(), z.literal("auto"), z.null()]).optional(),
     model: NullableNonEmptyStringSchema.optional(),
+    spawnedCwd: NullableNonEmptyStringSchema.optional(),
   })
   .strict()
   .refine(
@@ -402,6 +454,27 @@ export const DeleteSessionResponseSchema = z.object({
 }).strict();
 export type DeleteSessionResponse = z.infer<typeof DeleteSessionResponseSchema>;
 
+export const SessionsDescribeQuerySchema = z
+  .object({
+    key: NonEmptyStringSchema,
+    agentId: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type SessionsDescribeQuery = z.infer<typeof SessionsDescribeQuerySchema>;
+
+// Passthrough by design: the motor's runtime loader consumes `status` plus
+// `startedAt`/`endedAt` (epoch ms) and relies on *absence* — never `null` — to
+// detect activity. Extra gateway fields are preserved untouched.
+export const SessionsDescribeResponseSchema = z
+  .object({
+    key: NonEmptyStringSchema,
+    status: z.string().optional(),
+    startedAt: z.number().optional(),
+    endedAt: z.number().optional(),
+  })
+  .passthrough();
+export type SessionsDescribeResponse = z.infer<typeof SessionsDescribeResponseSchema>;
+
 export const SessionChangedEventSchema = z.object({
   sessionKey: NonEmptyStringSchema.optional(),
   agentId: z.string().optional(),
@@ -422,6 +495,7 @@ export type ConsoleEvent = z.infer<typeof ConsoleEventSchema>;
 export const BffStatusResponseSchema = StatusResponseSchema;
 export const BffAgentsResponseSchema = AgentsResponseSchema;
 export const BffSessionsResponseSchema = SessionsResponseSchema;
+export const BffNotificationsResponseSchema = NotificationsResponseSchema;
 export const BffChatHistoryResponseSchema = ChatHistoryResponseSchema;
 export const BffChatSendRequestSchema = ChatSendRequestSchema;
 export const BffChatSendResponseSchema = ChatSendResponseSchema;
@@ -433,3 +507,5 @@ export const BffPatchSessionRequestSchema = PatchSessionRequestSchema;
 export const BffDeleteSessionRequestSchema = DeleteSessionRequestSchema;
 export const BffDeleteSessionResponseSchema = DeleteSessionResponseSchema;
 export const BffSessionMutationResponseSchema = SessionMutationResponseSchema;
+export const BffSessionsDescribeQuerySchema = SessionsDescribeQuerySchema;
+export const BffSessionsDescribeResponseSchema = SessionsDescribeResponseSchema;

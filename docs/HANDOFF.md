@@ -20,6 +20,7 @@ Atualize este arquivo quando arquitetura, implantação, compatibilidade ou risc
 - catálogo de modelos com contexto e tamanho Ollama opcional;
 - sessões paginadas, criação, rename, delete e fork;
 - histórico, mensagem otimista, streaming e cancelamento;
+- recuperação integral e autenticada de mensagens truncadas no histórico;
 - comandos `/model` com reconciliação da label;
 - painel responsivo/redimensionável e persistência de layout;
 - cliente HTTP/SSE e cliente WebSocket reutilizáveis;
