@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: openclaw-console-app
     restart: unless-stopped
     network_mode: host
