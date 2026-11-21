@@ -36,6 +36,20 @@ export const api = {
     if (typeof payload.summary !== "string" || !payload.summary.trim()) throw new Error("Resumo por voz vazio");
     return payload.summary.trim();
   },
+  speechAudio: async (text: string): Promise<Blob> => {
+    const token = getStoredToken();
+    const response = await fetch(`${API_BASE_URL}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      let detail = "";
+      try { detail = ((await response.json()) as { error?: { message?: string } })?.error?.message ?? ""; } catch { /* resposta não-JSON */ }
+      throw new Error(detail || `TTS local indisponível (HTTP ${response.status})`);
+    }
+    return await response.blob();
+  },
   createAgent: (input: { name: string; workspace: string; model?: string; emoji?: string; avatar?: string }) => client.createAgent(input),
   updateAgent: (input: { agentId: string; name?: string; workspace?: string; model?: string; emoji?: string; avatar?: string }) => client.updateAgent(input),
   deleteAgent: (input: { agentId: string; deleteFiles?: boolean }) => client.deleteAgent({ deleteFiles: false, ...input }),

@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import type { ApiAgent, ApiMessage } from "./api";
 import { api } from "./api";
+import { MessageSpeechButton } from "./MessageSpeech";
 import { MultiColumnStream, useColumnLayout, useMeasuredHeight } from "./MultiColumnStream";
 
 type SendShortcut = "enter" | "ctrl-enter";
@@ -372,6 +373,7 @@ export const GroupMessageBubble = memo(function GroupMessageBubble({
                 minute: "2-digit",
               })}
             </Typography>
+            {!isUser && <MessageSpeechButton id={`grupo-${message.id}`} text={message.content} />}
             {!isUser && (
               <Tooltip title={copied ? "Copiado" : "Copiar resposta"}>
                 <IconButton

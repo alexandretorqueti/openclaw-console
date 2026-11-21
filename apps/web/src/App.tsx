@@ -19,6 +19,7 @@ import { api, type ApiAgent, type ApiAgentContextFile, type ApiMessage, type Api
 import { readCachedSessions, saveSessions } from "./sessionDb";
 import { GroupsPanel, GroupChatPane, GroupFormDialog, ManageAgentsDialog, useAgentGroups } from "./AgentGroups";
 import { useTextToSpeech } from "./useTextToSpeech";
+import { MessageSpeechButton, MessageSpeechContext } from "./MessageSpeech";
 import { MultiColumnStream, useColumnLayout, useMeasuredHeight, type MultiColumnStreamHandle } from "./MultiColumnStream";
 import { parseVoiceCommand, normalizeText } from "./voiceCommands";
 
@@ -338,7 +339,7 @@ const MessageBubble = memo(function MessageBubble({ message, agent }: { message:
     {!isUser && <Avatar sx={{ bgcolor: `${agentColor(agent)}25`, border: `1px solid ${agentColor(agent)}55` }}>{agent.emoji ?? "🤖"}</Avatar>}
     <Box className={isUser ? "message-bubble user" : "message-bubble"}><Stack direction="row" justifyContent="space-between" spacing={3}>
       <Typography variant="subtitle2">{message.author ?? (isUser ? "Alexandre" : agent.name)}</Typography>
-      <Stack direction="row" spacing={0.3} alignItems="center"><Typography variant="caption" color="text.secondary">{formatChatTimestamp(message.timestamp)}</Typography>{!isUser && <Tooltip title={copied ? "Copiado" : "Copiar resposta"}><IconButton className="copy-message" size="small" aria-label="Copiar resposta" onClick={() => void copyText(messageText(message)).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); })}><ContentCopyRounded /></IconButton></Tooltip>}</Stack>
+      <Stack direction="row" spacing={0.3} alignItems="center"><Typography variant="caption" color="text.secondary">{formatChatTimestamp(message.timestamp)}</Typography>{!isUser && <MessageSpeechButton id={message.id} text={messageText(message)} />}{!isUser && <Tooltip title={copied ? "Copiado" : "Copiar resposta"}><IconButton className="copy-message" size="small" aria-label="Copiar resposta" onClick={() => void copyText(messageText(message)).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); })}><ContentCopyRounded /></IconButton></Tooltip>}</Stack>
     </Stack><Typography variant="body2" className="message-content">{messageText(message)}</Typography></Box>
   </Box>;
 });
@@ -978,6 +979,8 @@ function ConsoleApp() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [sendShortcut, setSendShortcut] = useState<SendShortcut>(loadSendShortcut); const gatewayConnectedRef = useRef(false); const statusProbeRef = useRef<Promise<boolean> | undefined>(undefined);
   const tts = useTextToSpeech();
+  // Valor do contexto de fala por mensagem (botão em cada bolha de resposta).
+  const speechValue = useMemo(() => ({ activity: tts.activity, speakMessage: tts.speakMessage }), [tts.activity, tts.speakMessage]);
   const [micEnabled, setMicEnabled] = useState<boolean>(loadMicEnabled);
   useEffect(() => { try { localStorage.setItem(micEnabledStorageKey, String(micEnabled)); } catch { /* storage unavailable */ } }, [micEnabled]);
   const toggleMic = () => setMicEnabled((current) => !current);
@@ -1256,7 +1259,7 @@ function ConsoleApp() {
 
   const groupState = useAgentGroups(agents);
 
-  return <Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} notifications={notifications} notificationsAnchor={notificationsAnchor}
+  return <MessageSpeechContext.Provider value={speechValue}><Box className={`console-shell theme-${themeName} view-${view}${chatsVisible || chatsColumnVisible ? " chats-visible" : ""}`} style={{ gridTemplateColumns: gridColumns }}><BrandRail view={view} onNavigate={setView} notifications={notifications} notificationsAnchor={notificationsAnchor}
     onToggleNotifications={(anchor) => setNotificationsAnchor((current) => current === anchor ? null : anchor)}
     onCloseNotifications={() => setNotificationsAnchor(null)}
     onSelectNotification={openNotification}
@@ -1340,7 +1343,7 @@ function ConsoleApp() {
     </>}
     {error && <Alert severity="error" className="floating-error" onClose={() => setError("")}>{error}</Alert>}
     <Tooltip title={themeName === "escuro" ? "Tema claro" : "Tema escuro"}><IconButton className="theme-toggle" onClick={() => setThemeName(themeName === "escuro" ? "claro" : "escuro")}>{themeName === "escuro" ? <LightModeRounded /> : <DarkModeRounded />}</IconButton></Tooltip>
-  </Box>;
+  </Box></MessageSpeechContext.Provider>;
 }
 
 export default function App() { return <ConsoleApp />; }

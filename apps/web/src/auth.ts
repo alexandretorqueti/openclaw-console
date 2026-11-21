@@ -1,4 +1,4 @@
-export const API_BASE_URL = "https://openclaw-api.webconnect.com.br/api";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "https://openclaw-api.webconnect.com.br/api";
 
 const TOKEN_KEY = "open…oken";
 

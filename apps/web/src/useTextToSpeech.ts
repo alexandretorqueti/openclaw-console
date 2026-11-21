@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
-const STORAGE_KEY = "openclaw-console-tts-enabled";
-const MODE_STORAGE_KEY = "openclaw-console-tts-mode";
+const STORAGE_KEY = "***";
+const MODE_STORAGE_KEY = "***";
 export type TextToSpeechMode = "summary" | "full";
+export type SpeechPhase = "preparing" | "playing";
+export type SpeechActivity = { id: string; phase: SpeechPhase };
 
 function loadEnabled(): boolean {
   try {
@@ -65,11 +67,18 @@ export function useTextToSpeech() {
   const [mode, setMode] = useState<TextToSpeechMode>(loadMode);
   const [speaking, setSpeaking] = useState(false);
   const [supported, setSupported] = useState(false);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  // Fala em andamento iniciada pelo botão de uma mensagem (id + fase).
+  const [activity, setActivity] = useState<SpeechActivity | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
   const requestIdRef = useRef(0);
+  const activityRef = useRef<SpeechActivity | null>(null);
+  activityRef.current = activity;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
-    setSupported(typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window);
+    setSupported(typeof window !== "undefined" && typeof Audio !== "undefined");
   }, []);
 
   useEffect(() => {
@@ -81,20 +90,31 @@ export function useTextToSpeech() {
 
   const stop = useCallback(() => {
     requestIdRef.current += 1;
-    if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
-    utteranceRef.current = null;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
     setSpeaking(false);
+    setActivity(null);
   }, []);
 
-  const speak = useCallback(async (text: string) => {
-    if (!enabled || !supported || typeof window === "undefined") return;
+  // Núcleo do processo: resumo (modelo) → geração de áudio (Phonon/Ollama) → tocar.
+  // `messageId` identifica a fala manual (botão da bolha); null é a fala automática.
+  const run = useCallback(async (text: string, messageId: string | null) => {
+    if (!supported || typeof window === "undefined") return;
     stop();
     const requestId = requestIdRef.current;
-    // Sinaliza também o período de preparação do resumo. Assim o reconhecimento
-    // não continua captando o microfone enquanto o resumo é gerado.
+    // Sinaliza também o período de preparação (resumo + áudio). Assim o
+    // reconhecimento não continua captando o microfone enquanto o texto é falado.
     setSpeaking(true);
-    let clean = cleanForSpeech(text, "full");
-    if (mode === "summary") {
+    if (messageId) setActivity({ id: messageId, phase: "preparing" });
+    const currentMode = modeRef.current;
+    let clean = cleanForSpeech(text, currentMode);
+    if (currentMode === "summary") {
       try {
         clean = await api.speechSummary(text);
       } catch {
@@ -102,22 +122,43 @@ export function useTextToSpeech() {
       }
     }
     if (requestId !== requestIdRef.current || !clean) {
-      if (requestId === requestIdRef.current) setSpeaking(false);
+      if (requestId === requestIdRef.current) stop();
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.lang = "pt-BR";
-    utterance.rate = 1;
-    const voices = window.speechSynthesis.getVoices();
-    utterance.voice = voices.find((voice) => voice.lang.toLowerCase() === "pt-br")
-      ?? voices.find((voice) => voice.lang.toLowerCase().startsWith("pt"))
-      ?? null;
-    utterance.onstart = () => setSpeaking(true);
-    utterance.onend = () => { utteranceRef.current = null; setSpeaking(false); };
-    utterance.onerror = () => { utteranceRef.current = null; setSpeaking(false); };
-    utteranceRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-  }, [enabled, mode, stop, supported]);
+    try {
+      const blob = await api.speechAudio(clean);
+      // A geração de áudio é assíncrona: descarta falas já substituídas/interrompidas.
+      if (requestId !== requestIdRef.current) return;
+      const url = URL.createObjectURL(blob);
+      objectUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      const finish = () => { if (requestId === requestIdRef.current) stop(); };
+      audio.onended = finish;
+      audio.onerror = () => {
+        console.error("Erro ao reproduzir áudio do TTS local (Phonon/Ollama)");
+        finish();
+      };
+      await audio.play();
+      if (requestId !== requestIdRef.current) return;
+      if (messageId) setActivity({ id: messageId, phase: "playing" });
+    } catch (err) {
+      console.error(err);
+      if (requestId === requestIdRef.current) stop();
+    }
+  }, [stop, supported]);
+
+  // Fala automática (respostas novas, quando o alto-falante global está ligado).
+  const speak = useCallback(async (text: string) => {
+    if (!enabled) return;
+    await run(text, null);
+  }, [enabled, run]);
+
+  // Fala manual pelo botão da mensagem. Clique na mesma fala = parar.
+  const speakMessage = useCallback((id: string, text: string) => {
+    if (activityRef.current?.id === id) { stop(); return; }
+    void run(text, id);
+  }, [run, stop]);
 
   const toggle = useCallback(() => {
     setEnabled((prev) => {
@@ -132,5 +173,5 @@ export function useTextToSpeech() {
 
   useEffect(() => () => stop(), [stop]);
 
-  return { enabled, mode, speaking, supported, speak, stop, toggle, toggleMode };
+  return { enabled, mode, speaking, supported, activity, speak, speakMessage, stop, toggle, toggleMode };
 }

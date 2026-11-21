@@ -24,14 +24,13 @@ import { ensureProjectsLink } from "./workspace-project-link.js";
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
 const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
-const speechSummaryModel = "qwen3.5:9b";
+const speechSummaryModel = "qwen3:8b";
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
 const gatewayAgentWorkspaceRoot = process.env.OPENCLAW_GATEWAY_AGENT_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
 const sharedProjectsPath = process.env.OPENCLAW_SHARED_PROJECTS_PATH?.trim() || "/data/workspace/projects";
 const sessionWorkspaceRoot = process.env.OPENCLAW_SESSION_WORKSPACE_ROOT?.trim() || "/data/workspace/projects/agentes";
-const elevenlabsApiKey = process.env.ELEVENLABS_API_KEY?.trim();
 
 const deviceIdentity = loadOrCreateDeviceIdentity(process.env.OPENCLAW_DEVICE_IDENTITY_PATH ?? "/data/state/device.json");
 const startedAt = Date.now();
@@ -75,7 +74,6 @@ app.addHook("onRequest", async (request, reply) => {
 });
 const consoleToken = process.env.OPENCLAW_CONSOLE_TOKEN?.trim();
 if (!consoleToken) app.log.warn("OPENCLAW_CONSOLE_TOKEN is not set; /api endpoints are UNPROTECTED");
-if (!elevenlabsApiKey) app.log.warn("ELEVENLABS_API_KEY is not set; POST /api/tts responderá 503");
 const extractConsoleToken = (request: FastifyRequest): string | undefined => {
   const auth = request.headers.authorization;
   if (typeof auth === "string" && auth.startsWith("Bearer ")) return auth.slice(7).trim();
@@ -240,29 +238,75 @@ app.post("/api/speech-summary", async (request, reply) => {
   if (!summary) throw Object.assign(new Error("Ollama não retornou um resumo"), { code: "UPSTREAM_ERROR" });
   return { summary };
 });
+const PHONON_MAX_INPUT = 4000; // limite do Ollama: 4096 caracteres por requisição
+const PHONON_SAMPLE_RATE = 24000; // WAV 16-bit mono 24 kHz gerado pelo Phonon
 const TtsRequestSchema = z.object({
-  text: z.string().trim().min(1).max(5000),
-  voiceId: z.string().trim().min(1).default("JBFqnCBsd6RMkjVDRZzb"),
-  modelId: z.string().trim().min(1).default("eleven_multilingual_v2"),
+  text: z.string().trim().min(1).max(20_000),
+  voice: z.string().trim().min(1).default("Isadora"),
+  model: z.string().trim().min(1).default("phonon:40m-pt"),
 }).strict();
-app.post("/api/tts", async (request, reply) => {
-  if (!elevenlabsApiKey) throw Object.assign(new Error("ELEVENLABS_API_KEY não configurada no servidor"), { code: "UNAVAILABLE" });
-  const body = parse(TtsRequestSchema, request.body);
-  const voiceId = body.voiceId ?? "JBFqnCBsd6RMkjVDRZzb";
-  const modelId = body.modelId ?? "eleven_multilingual_v2";
-  const upstream = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream?output_format=mp3_44100_128`, {
-    method: "POST",
-    headers: { "xi-api-key": elevenlabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-    body: JSON.stringify({ text: body.text, model_id: modelId }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!upstream.ok) {
-    const detail = (await upstream.text()).slice(0, 500);
-    app.log.error({ status: upstream.status, detail }, "ElevenLabs TTS upstream failed");
-    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `ElevenLabs TTS error ${upstream.status}` } });
+
+function splitForSpeech(text: string): string[] {
+  if (text.length <= PHONON_MAX_INPUT) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > PHONON_MAX_INPUT) {
+    const slice = remaining.slice(0, PHONON_MAX_INPUT);
+    const breakAt = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "), slice.lastIndexOf("\n"), slice.lastIndexOf(", "));
+    const cut = breakAt > PHONON_MAX_INPUT / 2 ? breakAt + 1 : PHONON_MAX_INPUT;
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
   }
-  const audio = Buffer.from(await upstream.arrayBuffer());
-  reply.header("Content-Type", "audio/mpeg");
+  if (remaining) chunks.push(remaining);
+  return chunks.filter(Boolean);
+}
+
+function extractWavPcm(buf: Buffer): Buffer {
+  const dataAt = buf.indexOf("data");
+  if (dataAt === -1 || dataAt + 8 > buf.length) throw Object.assign(new Error("Resposta de áudio inválida do Ollama"), { code: "UPSTREAM_ERROR" });
+  const declaredSize = buf.readUInt32LE(dataAt + 4);
+  const size = Math.min(declaredSize === 0xffffffff ? buf.length - dataAt - 8 : declaredSize, buf.length - dataAt - 8);
+  return buf.subarray(dataAt + 8, dataAt + 8 + size);
+}
+
+function buildWav(pcm: Buffer): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(PHONON_SAMPLE_RATE, 24);
+  header.writeUInt32LE(PHONON_SAMPLE_RATE * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+app.post("/api/tts", async (request, reply) => {
+  const body = parse(TtsRequestSchema, request.body);
+  const chunks = splitForSpeech(body.text);
+  const pcmParts: Buffer[] = [];
+  for (const chunk of chunks) {
+    const upstream = await fetch(`${ollamaUrl}/v1/audio/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "audio/wav" },
+      body: JSON.stringify({ model: body.model, input: chunk, voice: body.voice, response_format: "wav" }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!upstream.ok) {
+      const detail = (await upstream.text()).slice(0, 500);
+      app.log.error({ status: upstream.status, detail, model: body.model, voice: body.voice }, "Ollama Phonon TTS failed");
+      return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `TTS Ollama error ${upstream.status}` } });
+    }
+    pcmParts.push(extractWavPcm(Buffer.from(await upstream.arrayBuffer())));
+  }
+  const audio = buildWav(Buffer.concat(pcmParts));
+  reply.header("Content-Type", "audio/wav");
   reply.header("Cache-Control", "no-store");
   return reply.send(audio);
 });
