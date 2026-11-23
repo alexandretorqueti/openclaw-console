@@ -81,6 +81,15 @@ export function useTextToSpeech() {
     setSupported(typeof window !== "undefined" && typeof Audio !== "undefined");
   }, []);
 
+  // Voz ligada → mantém o Phonon residente no Ollama (o BFF segura o keep-alive
+  // por ~30 min; reacender a cada 20 min cobre sessões longas sem custo real).
+  useEffect(() => {
+    if (!enabled) return;
+    void api.warmVoice();
+    const timer = setInterval(() => void api.warmVoice(), 20 * 60_000);
+    return () => clearInterval(timer);
+  }, [enabled]);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, String(enabled));

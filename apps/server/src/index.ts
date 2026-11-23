@@ -20,11 +20,53 @@ import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } f
 import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
+import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type OllamaLoadedModel } from "./voice.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
 const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
-const speechSummaryModel = "qwen3:8b";
+const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "qwen3:8b";
+const phononModel = process.env.OPENCLAW_PHONON_MODEL?.trim() || "phonon:40m-pt";
+
+// Fila única de voz (resumo + aquecimento) e fila própria de TTS: nunca dois
+// pedidos de voz disputam o Ollama ao mesmo tempo.
+const voiceQueue = createVoiceQueue();
+const ttsQueue = createVoiceQueue();
+
+// Runs de chat ativos vistos nos eventos do Gateway (runId → último delta).
+// Usado para esperar a GPU livre antes de CARREGAR o modelo pequeno de resumo
+// (carregamento com geração ativa causa evicção/ping-pong; fonon não evicta).
+const activeRuns = new Map<string, number>();
+function trackChatRun(event: { runId?: string; state: string }): void {
+  if (!event.runId) return;
+  if (event.state === "delta") activeRuns.set(event.runId, Date.now());
+  else activeRuns.delete(event.runId);
+}
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60_000;
+  for (const [runId, seenAt] of activeRuns) if (seenAt < cutoff) activeRuns.delete(runId);
+}, 60_000).unref?.();
+async function waitForNoActiveRuns(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (activeRuns.size > 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1_500));
+  return activeRuns.size === 0;
+}
+
+async function ollamaLoadedModels(): Promise<OllamaLoadedModel[]> {
+  try {
+    const response = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(3_000) });
+    if (!response.ok) return [];
+    const payload = record(await response.json());
+    const models = Array.isArray(payload.models) ? payload.models : [];
+    return models.flatMap((value) => {
+      const model = record(value);
+      const name = typeof model.name === "string" && model.name.trim() ? model.name.trim() : undefined;
+      if (!name) return [];
+      const sizeVramBytes = typeof model.size_vram === "number" && Number.isFinite(model.size_vram) ? model.size_vram : typeof model.size === "number" && Number.isFinite(model.size) ? model.size : 0;
+      return [{ name, sizeVramBytes }];
+    });
+  } catch { return []; }
+}
 const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 if (!token) throw new Error("OPENCLAW_GATEWAY_TOKEN is required");
 const defaultAgentWorkspaceRoot = process.env.OPENCLAW_AGENT_WORKSPACE_ROOT?.trim() || "/data/.openclaw";
@@ -138,7 +180,7 @@ gateway.on("status", (_connection: GatewayConnectionStatus) => sse("status", sta
 gateway.on("connected", () => { gatewayError = undefined; sse("status", status()); void gateway.request("sessions.subscribe", {}).catch((error: unknown) => { app.log.warn({ err: error }, "failed to subscribe to session changes"); }); });
 gateway.on("error", (error: Error) => { gatewayError = error.message; sse("status", status()); });
 gateway.on("event", (frame: GatewayEventFrame) => {
-  const event = normalizeChatEvent(frame); if (event) sse("chat", event);
+  const event = normalizeChatEvent(frame); if (event) { trackChatRun(event); sse("chat", event); }
   if (frame.event === "sessions.changed") {
     const payload = record(frame.payload);
     // O gateway aninha a sessão em payload.session (buildSessionEventSnapshot /
@@ -208,11 +250,21 @@ app.get("/api/models", async () => {
 const SpeechSummaryRequestSchema = z.object({ text: z.string().trim().min(1).max(20_000) }).strict();
 app.post("/api/speech-summary", async (request, reply) => {
   const body = parse(SpeechSummaryRequestSchema, request.body);
+  return voiceQueue.enqueue(async () => {
+  // Usa o modelo grande JÁ RESIDENTE para resumir (zero carga, zero evicção).
+  // O modelo pequeno (fallback) só é usado quando nada está residente; nesse
+  // caso, se houver geração ativa, espera a GPU liberar para não causar ping-pong.
+  const loaded = await ollamaLoadedModels();
+  const model = pickSummaryModel(loaded, speechSummaryModel);
+  if (model === speechSummaryModel && !loaded.some((item) => item.name.toLowerCase() === speechSummaryModel.toLowerCase()) && activeRuns.size > 0) {
+    const idle = await waitForNoActiveRuns(60_000);
+    app.log.info({ idle, activeRuns: activeRuns.size }, "speech summary waited for Ollama to be free before loading the fallback model");
+  }
   const upstream = await fetch(`${ollamaUrl}/api/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: speechSummaryModel,
+      model,
       stream: false,
       think: false,
       options: { temperature: 0.2 },
@@ -230,13 +282,14 @@ app.post("/api/speech-summary", async (request, reply) => {
   });
   if (!upstream.ok) {
     const detail = (await upstream.text()).slice(0, 300);
-    app.log.warn({ status: upstream.status, detail, model: speechSummaryModel }, "Ollama speech summary failed");
+    app.log.warn({ status: upstream.status, detail, model }, "Ollama speech summary failed");
     return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
   }
   const payload = record(await upstream.json());
   const summary = typeof payload.response === "string" ? payload.response.trim() : "";
   if (!summary) throw Object.assign(new Error("Ollama não retornou um resumo"), { code: "UPSTREAM_ERROR" });
   return { summary };
+  });
 });
 const PHONON_MAX_INPUT = 4000; // limite do Ollama: 4096 caracteres por requisição
 const PHONON_SAMPLE_RATE = 24000; // WAV 16-bit mono 24 kHz gerado pelo Phonon
@@ -289,6 +342,7 @@ function buildWav(pcm: Buffer): Buffer {
 
 app.post("/api/tts", async (request, reply) => {
   const body = parse(TtsRequestSchema, request.body);
+  return ttsQueue.enqueue(async () => {
   const chunks = splitForSpeech(body.text);
   const pcmParts: Buffer[] = [];
   for (const chunk of chunks) {
@@ -309,7 +363,33 @@ app.post("/api/tts", async (request, reply) => {
   reply.header("Content-Type", "audio/wav");
   reply.header("Cache-Control", "no-store");
   return reply.send(audio);
+  });
 });
+
+// Aquecimento do Phonon: a primeira fala custa ~50s de carga; manter residente
+// custa ~0,17 GB de VRAM (cabe ao lado do modelo grande). keep_alive no endpoint
+// de áudio é ignorado pelo Ollama (expira ~5 min), então o BFF reaquece a cada
+// 4 min durante 30 min a cada chamada — o frontend repete enquanto a voz está ligada.
+const voiceWarmer = createVoiceWarmer({
+  warm: async () => {
+    const loaded = await ollamaLoadedModels();
+    if (loaded.some((model) => isPhononModel(model.name))) return;
+    const upstream = await fetch(`${ollamaUrl}/v1/audio/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "audio/wav" },
+      body: JSON.stringify({ model: phononModel, input: "aquecimento", voice: "Isadora", response_format: "wav" }),
+      signal: AbortSignal.timeout(180_000),
+    });
+    if (!upstream.ok) throw new Error(`Aquecimento do Phonon falhou (HTTP ${upstream.status})`);
+    await upstream.arrayBuffer();
+  },
+});
+app.post("/api/warm-voice", async (_request, response) => {
+  // Responde já; o aquecimento segue em background pela fila de voz.
+  void voiceQueue.enqueue(() => voiceWarmer.start());
+  return response.code(202).send({ ok: true });
+});
+app.get("/api/voice-status", async () => ({ loaded: await ollamaLoadedModels(), activeRuns: activeRuns.size }));
 
 async function assertValidSessionWorkspacePath(workspacePath: string): Promise<void> {
   if (!isAbsolute(workspacePath)) {

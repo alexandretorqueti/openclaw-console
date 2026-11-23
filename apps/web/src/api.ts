@@ -50,6 +50,17 @@ export const api = {
     }
     return await response.blob();
   },
+  // Mantém o Phonon residente no Ollama enquanto a voz está ligada (o BFF
+  // reaquece sozinho a cada 4 min durante 30 min por chamada).
+  warmVoice: async (): Promise<void> => {
+    const token = getStoredToken();
+    try {
+      await fetch(`${API_BASE_URL}/warm-voice`, {
+        method: "POST",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+    } catch { /* melhor esforço: a fala funciona mesmo sem aquecimento */ }
+  },
   createAgent: (input: { name: string; workspace: string; model?: string; emoji?: string; avatar?: string }) => client.createAgent(input),
   updateAgent: (input: { agentId: string; name?: string; workspace?: string; model?: string; emoji?: string; avatar?: string }) => client.updateAgent(input),
   deleteAgent: (input: { agentId: string; deleteFiles?: boolean }) => client.deleteAgent({ deleteFiles: false, ...input }),
