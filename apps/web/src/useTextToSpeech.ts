@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
-const STORAGE_KEY = "***";
-const MODE_STORAGE_KEY = "***";
-export type TextToSpeechMode = "summary" | "full";
+const STORAGE_KEY = "opencl…h-on";
 export type SpeechPhase = "preparing" | "playing";
 export type SpeechActivity = { id: string; phase: SpeechPhase };
+
+// Regra de leitura (decisão 2026-11-24, Alexandre):
+// - Leitura AUTOMÁTICA (alto-falante global ligado, resposta nova): lê o TEXTO
+//   COMPLETO, pulando código/tabelas/comandos — SEM resumo por modelo.
+// - Leitura MANUAL (botão de alto-falante na bolha): RESUMO por modelo (residente),
+//   com fallback heurístico local se o resumo falhar.
 
 function loadEnabled(): boolean {
   try {
@@ -15,25 +19,25 @@ function loadEnabled(): boolean {
   }
 }
 
-function loadMode(): TextToSpeechMode {
-  try {
-    return localStorage.getItem(MODE_STORAGE_KEY) === "full" ? "full" : "summary";
-  } catch {
-    return "summary";
-  }
-}
-
-function normalizeText(text: string): string {
-  return text
+// Limpa o que não serve para leitura: blocos de código, código inline, tabelas,
+// linhas de comando/terminal, URLs e lixo de markdown — mantendo o resto.
+export function cleanForFullSpeech(text: string): string {
+  const cleaned = text
     .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`[^`]*`/g, " ")
+    .replace(/`[^`\n]+`/g, " ")
+    .replace(/^[ \t]*\|[\s\S]*?(?=\n[^\n|]*$|$)/gm, " ")
+    .replace(/^[ \t]*(\$( |$)|% |npm |yarn |pnpm |npx |git |docker |kubectl |curl |make |uvicorn|pytest |pip3? |brew |apt(-get)? |ssh |scp |crontab )/gm, " ")
     .replace(/!?(\[[^\]]*\])\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/[#*_~>|]/g, "")
+    .replace(/[#*_~>|]/g, " ")
     .replace(/\s{2,}/g, " ")
     .trim();
+  // Se a limpeza esvaziou o texto (resposta 100% código/tabela), cai no fallback
+  // heurístico para a leitura não ficar vazia.
+  return cleaned || summaryForSpeech(text);
 }
 
+// Fallback heurístico (sem modelo): primeiras frases coerentes do texto.
 function summaryForSpeech(text: string): string {
   const lines = text
     .split(/\r?\n/)
@@ -41,7 +45,14 @@ function summaryForSpeech(text: string): string {
     .filter(Boolean)
     .filter((line) => !/^(\$|>|npm |yarn |pnpm |git |docker |traceback|error:|at\s)/i.test(line))
     .filter((line) => !/(\/|\\|\.[a-z0-9]{1,8}\b|node_modules|stack trace|sha256|uuid)/i.test(line) || line.length < 90);
-  const cleaned = normalizeText(lines.join(". "));
+  const cleaned = lines.join(". ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ")
+    .replace(/!?(\[[^\]]*\])\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/[#*_~>|]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   if (!cleaned) return "A resposta contém apenas detalhes técnicos ou código.";
 
   // Mantém as primeiras ideias completas e evita transformar uma resposta longa
@@ -58,13 +69,21 @@ function summaryForSpeech(text: string): string {
   return selected.join(" ") || cleaned.slice(0, 650);
 }
 
-function cleanForSpeech(text: string, mode: TextToSpeechMode): string {
-  return mode === "summary" ? summaryForSpeech(text) : normalizeText(text);
+// `kind`: "auto" = leitura automática (texto completo com pulos);
+//        "message" = botão da bolha (resumo por modelo, fallback heurístico).
+export async function prepareSpeechText(text: string, kind: "auto" | "message"): Promise<string> {
+  if (kind === "message") {
+    try {
+      return (await api.speechSummary(text)).trim();
+    } catch {
+      return summaryForSpeech(text);
+    }
+  }
+  return cleanForFullSpeech(text);
 }
 
 export function useTextToSpeech() {
   const [enabled, setEnabled] = useState(loadEnabled);
-  const [mode, setMode] = useState<TextToSpeechMode>(loadMode);
   const [speaking, setSpeaking] = useState(false);
   const [supported, setSupported] = useState(false);
   // Fala em andamento iniciada pelo botão de uma mensagem (id + fase).
@@ -74,8 +93,6 @@ export function useTextToSpeech() {
   const requestIdRef = useRef(0);
   const activityRef = useRef<SpeechActivity | null>(null);
   activityRef.current = activity;
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
 
   useEffect(() => {
     setSupported(typeof window !== "undefined" && typeof Audio !== "undefined");
@@ -93,9 +110,8 @@ export function useTextToSpeech() {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, String(enabled));
-      localStorage.setItem(MODE_STORAGE_KEY, mode);
     } catch { /* storage unavailable */ }
-  }, [enabled, mode]);
+  }, [enabled]);
 
   const stop = useCallback(() => {
     requestIdRef.current += 1;
@@ -111,7 +127,7 @@ export function useTextToSpeech() {
     setActivity(null);
   }, []);
 
-  // Núcleo do processo: resumo (modelo) → geração de áudio (Phonon/Ollama) → tocar.
+  // Núcleo: preparar texto (regra por origem) → geração de áudio (Phonon/Ollama) → tocar.
   // `messageId` identifica a fala manual (botão da bolha); null é a fala automática.
   const run = useCallback(async (text: string, messageId: string | null) => {
     if (!supported || typeof window === "undefined") return;
@@ -121,15 +137,8 @@ export function useTextToSpeech() {
     // reconhecimento não continua captando o microfone enquanto o texto é falado.
     setSpeaking(true);
     if (messageId) setActivity({ id: messageId, phase: "preparing" });
-    const currentMode = modeRef.current;
-    let clean = cleanForSpeech(text, currentMode);
-    if (currentMode === "summary") {
-      try {
-        clean = await api.speechSummary(text);
-      } catch {
-        clean = cleanForSpeech(text, "summary");
-      }
-    }
+    const kind = messageId === null ? "auto" : "message";
+    let clean = await prepareSpeechText(text, kind);
     if (requestId !== requestIdRef.current || !clean) {
       if (requestId === requestIdRef.current) stop();
       return;
@@ -157,13 +166,15 @@ export function useTextToSpeech() {
     }
   }, [stop, supported]);
 
-  // Fala automática (respostas novas, quando o alto-falante global está ligado).
+  // Fala automática (respostas novas, quando o alto-falante global está ligado):
+  // lê o texto completo, pulando código/tabelas/comandos — sem resumo por modelo.
   const speak = useCallback(async (text: string) => {
     if (!enabled) return;
     await run(text, null);
   }, [enabled, run]);
 
-  // Fala manual pelo botão da mensagem. Clique na mesma fala = parar.
+  // Fala manual pelo botão da mensagem: resumo por modelo (residente), fallback
+  // heurístico local. Clique na mesma fala = parar.
   const speakMessage = useCallback((id: string, text: string) => {
     if (activityRef.current?.id === id) { stop(); return; }
     void run(text, id);
@@ -176,11 +187,7 @@ export function useTextToSpeech() {
     });
   }, [stop]);
 
-  const toggleMode = useCallback(() => {
-    setMode((prev) => prev === "summary" ? "full" : "summary");
-  }, []);
-
   useEffect(() => () => stop(), [stop]);
 
-  return { enabled, mode, speaking, supported, activity, speak, speakMessage, stop, toggle, toggleMode };
+  return { enabled, speaking, supported, activity, speak, speakMessage, stop, toggle };
 }
