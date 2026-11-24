@@ -137,6 +137,10 @@ export function useTextToSpeech() {
   // Garante um único streamLoop por vez (evita dois loops disputando o buffer
   // e audios saindo fora de ordem).
   const streamLoopRunningRef = useRef(false);
+  // Stream chegou ao fim (evento final) → o loop fala o resto sem exigir sentença.
+  const streamEndedRef = useRef(false);
+  // Resolve pendente do playAndWait (stop() usa para destravar o loop).
+  const playResolveRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     setSupported(typeof window !== "undefined" && typeof Audio !== "undefined");
@@ -162,9 +166,16 @@ export function useTextToSpeech() {
     if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
     streamPendingRef.current = "";
     streamInFenceRef.current = false;
+    streamEndedRef.current = false;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
+    }
+    if (playResolveRef.current) {
+      // destrava o await de reprodução do streamLoop (pause não dispara onended)
+      const resolve = playResolveRef.current;
+      playResolveRef.current = null;
+      resolve();
     }
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
@@ -174,37 +185,46 @@ export function useTextToSpeech() {
     setActivity(null);
   }, []);
 
-  // Encadeia audios: um toca depois do outro, mantendo o request atual.
-  const playChunk = useCallback(async (audio: HTMLAudioElement, requestId: number) => {
-    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
-    const prev = (playChunk as unknown as { __chain?: Promise<void> }).__chain ?? Promise.resolve();
-    const next = prev.then(async () => {
-      if (requestId !== requestIdRef.current) return;
-      const finish = () => { if (requestId === requestIdRef.current) stop(); };
-      audio.onended = finish;
-      audio.onerror = () => {
-        console.error("Erro ao reproduzir áudio do TTS local (Phonon/Ollama)");
-        finish();
-      };
-      await audio.play();
+  // Toca e espera o áudio TERMINAR (onended/onerror/falha de play). O antigo
+  // playChunk encadeava promises mas retornava já — audio.play() resolve no
+  // INÍCIO da reprodução, então o loop seguia e os blocos tocavam sobrepostos.
+  const playAndWait = useCallback((audio: HTMLAudioElement): Promise<void> => new Promise<void>((resolve) => {
+    playResolveRef.current = resolve;
+    const done = () => {
+      if (playResolveRef.current === resolve) playResolveRef.current = null;
+      resolve();
+    };
+    audio.onended = done;
+    audio.onerror = () => {
+      console.error("Erro ao reproduzir áudio do TTS local (Phonon/Ollama)");
+      done();
+    };
+    audio.play().catch((err) => {
+      console.error("Falha ao iniciar reprodução do TTS:", err);
+      done();
     });
-    (playChunk as unknown as { __chain?: Promise<void> }).__chain = next;
-  }, [stop]);
+  }), []);
 
   // Loop do streaming: enquanto houver buffer, corta sentenças, gera áudio no
-  // Phonon (fila serial do BFF) e toca na ordem. O áudio do próximo bloco é
-  // preparado ENQUANTO o anterior toca — por isso a voz acompanha o texto.
+  // Phonon (fila serial do BFF) e toca EM ORDEM, esperando cada bloco terminar
+  // (playAndWait). A geração do próximo só começa após o anterior tocar.
   const streamLoop = useCallback(async (requestId: number) => {
     if (streamLoopRunningRef.current) return;
     streamLoopRunningRef.current = true;
     try {
       while (requestId === requestIdRef.current) {
-        const sentence = popSentence(streamPendingRef.current, STREAM_MIN_SENTENCE);
+        let sentence: string | null;
+        if (streamEndedRef.current) {
+          // Resposta finalizada: fala o resto do buffer mesmo sem sentença fechada.
+          const rest = streamPendingRef.current;
+          streamPendingRef.current = "";
+          sentence = rest.trim() || null;
+        } else {
+          sentence = popSentence(streamPendingRef.current, STREAM_MIN_SENTENCE);
+          if (sentence) streamPendingRef.current = streamPendingRef.current.slice(sentence.length).trimStart();
+        }
         if (!sentence) break;
-        // A sentença é o PREFIXO do buffer: remove o que já foi falado.
-        streamPendingRef.current = streamPendingRef.current.slice(sentence.length).trimStart();
         const clean = cleanForFullSpeech(sentence);
-        if (requestId !== requestIdRef.current) return;
         if (!clean) continue;
         try {
           const blob = await api.speechAudio(clean);
@@ -214,7 +234,7 @@ export function useTextToSpeech() {
           const audio = new Audio(url);
           audioRef.current = audio;
           setSpeaking(true);
-          await playChunk(audio, requestId);
+          await playAndWait(audio);
         } catch (err) {
           console.error(err);
         }
@@ -225,13 +245,17 @@ export function useTextToSpeech() {
       }
     } finally {
       streamLoopRunningRef.current = false;
-      // Se chegou texto novo durante a espera (loop encerrado por buffer vazio,
-      // por exemplo), retoma o processamento.
-      if (requestId === requestIdRef.current && streamPendingRef.current.trim()) {
-        void streamLoop(requestId);
+      // Retomada assíncrona (setTimeout) — recursão síncrona aqui estourava a
+      // pilha (RangeError) quando o buffer tinha texto sem sentença falável.
+      // Só reagenda se há algo realmente falável (sentença completa ou fim).
+      if (requestId === requestIdRef.current) {
+        const speakable = streamEndedRef.current
+          ? Boolean(streamPendingRef.current.trim())
+          : popSentence(streamPendingRef.current, STREAM_MIN_SENTENCE) !== null;
+        if (speakable) setTimeout(() => { if (requestId === requestIdRef.current) void streamLoop(requestId); }, 0);
       }
     }
-  }, [playChunk]);
+  }, [playAndWait]);
 
   // Stream do chat: appende texto novo (pular conteúdo de cerca de código) e
   // dispara o loop assim que houver uma sentença falável (ou via timer, se o
@@ -272,19 +296,25 @@ export function useTextToSpeech() {
     }
   }, [streamLoop]);
 
-  // Fim do stream: fala o resto do buffer (mesmo sem sentença fechada).
+  // Fim do stream: marca encerrado — o loop fala o resto do buffer mesmo sem
+  // sentença fechada (sem isso, um rabo curto nunca seria falado).
   const flushStream = useCallback(() => {
     if (!enabledRef.current) return;
-    if (!streamPendingRef.current.trim()) return;
+    streamEndedRef.current = true;
     if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+    if (!streamPendingRef.current.trim() && !streamLoopRunningRef.current) {
+      setSpeaking(false);
+      return;
+    }
     void streamLoop(requestIdRef.current);
   }, [streamLoop]);
 
-  // Nova mensagem do usuário: descarta qualquer resto de fala da resposta antiga.
+  // Nova mensagem do usuário / troca de sessão: descarta resto de fala antigo.
   const resetStream = useCallback(() => {
     if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
     streamPendingRef.current = "";
     streamInFenceRef.current = false;
+    streamEndedRef.current = false;
   }, []);
 
   // Fala automática de uma vez (texto já completo — ex.: legado/fallback).

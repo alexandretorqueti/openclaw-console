@@ -1198,7 +1198,7 @@ function ConsoleApp() {
     if (agentId) void loadSessions(agentId);
   }, [agentId, loadSessions]);
   useEffect(() => { initialRestoreRef.current = false; }, []);
-  useEffect(() => { if (sessionKey && selectedSessionAgentId) lastSessionByAgentRef.current.set(selectedSessionAgentId, sessionKey); setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
+  useEffect(() => { if (sessionKey && selectedSessionAgentId) lastSessionByAgentRef.current.set(selectedSessionAgentId, sessionKey); setMessages(optimisticMessagesRef.current.get(sessionKey) ?? []); setSessionId(undefined); setStreamText(""); setRunId(undefined); ttsResetRef.current(); const active = processingBySessionRef.current.get(sessionKey) ?? Boolean(selectedSession?.hasActiveRun); setProcessing(active); if (sessionKey && selectedSessionAgentId) void loadHistory(sessionKey, selectedSessionAgentId); }, [sessionKey, selectedSessionAgentId, loadHistory]);
   // Ao abrir uma sessão, marcar como lida (o Gateway seta lastReadAt; novas respostas voltam a notificar)
   useEffect(() => { const item = notificationsRef.current.find((n) => n.session.key === sessionKey); if (item) void markNotificationsRead([item.session]); }, [sessionKey, markNotificationsRead]);
   // Reconciliação periódica das notificações (fonte da verdade é o Gateway)
