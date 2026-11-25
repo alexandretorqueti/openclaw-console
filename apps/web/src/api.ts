@@ -73,7 +73,7 @@ export const api = {
     const value = await client.getChatHistory({ sessionKey, agentId, limit: 300, offset: 0 });
     return { ...value, messages: messages(value.messages) };
   },
-  send: (input: { sessionKey: string; agentId: string; sessionId?: string; message: string }) => client.sendChat(input),
+  send: (input: { sessionKey: string; agentId: string; sessionId?: string; message: string; vram?: boolean; modelRef?: string }) => client.sendChat(input),
   abort: (input: { sessionKey: string; agentId: string; runId?: string }) => client.abortChat(input),
   createSession: (input: { agentId: string; label?: string; model?: string }) => client.createSession(input),
   forkSession: (input: { parentSessionKey: string; agentId: string; label?: string }) => client.forkSession(input),

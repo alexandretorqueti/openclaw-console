@@ -352,6 +352,12 @@ export const ChatSendRequestSchema = z
     // Idempotency key supplied by the caller (the motor kernel generates its own UUID
     // for retries). Optional: when absent the BFF generates one server-side.
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
+    // Checkbox "VRAM" do console: false fixa num_gpu=0 no modelo local (carrega na
+    // RAM); true remove o fixo (volta ao padrão VRAM). modelRef é o modelo efetivo da
+    // sessão (`provedor/id`) para o BFF aplicar o ajuste só naquele modelo. Provedores
+    // que não são Ollama ignoram o pedido. Campos do BFF — não vão ao chat.send.
+    vram: z.boolean().optional(),
+    modelRef: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 export type ChatSendRequest = z.infer<typeof ChatSendRequestSchema>;

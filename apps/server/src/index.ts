@@ -18,6 +18,7 @@ import {
 } from "@alexandretorqueti/openclaw-console-contracts";
 import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } from "@alexandretorqueti/openclaw-gateway-client";
 import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
+import { buildVramPatch, ollamaModelRef, readNumGpu, shouldApplyVramPatch } from "./vram.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
 import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type OllamaLoadedModel } from "./voice.js";
@@ -208,6 +209,43 @@ function mutation(raw: unknown, fallbackKey?: string) {
 function canonicalAgentId(sessionKey: string, fallback?: string) {
   if (!sessionKey.startsWith("agent:")) return fallback;
   return sessionKey.split(":")[1] || fallback;
+}
+
+// Checkbox VRAM do chat (apps/server/src/vram.ts): desmarcado fixa num_gpu=0 no
+// modelo Ollama atual do Gateway (hot-reload — o provedor injeta o valor no JSON
+// da requisição /api/chat, e o Ollama carrega o modelo na RAM se ele ainda não
+// estiver carregado); marcado remove o fixo e o carregamento volta ao padrão VRAM.
+// O chat.send do Gateway tem schema fechado (não aceita num_gpu), por isso o
+// ajuste é feito na config por modelo, antes de encaminhar a mensagem.
+let vramWriteChain: Promise<unknown> = Promise.resolve();
+function applyVramLoading(vram: boolean, modelRef: string | undefined): Promise<void> {
+  const ref = ollamaModelRef(modelRef);
+  if (!ref) return Promise.resolve();
+  const run = async () => {
+    const snapshot = record(await rpc("config.get", {}));
+    const baseHash = typeof snapshot.hash === "string" ? snapshot.hash : undefined;
+    const current = readNumGpu(snapshot.config ?? snapshot.parsed, ref);
+    if (!shouldApplyVramPatch(current, vram)) return;
+    const patchParams: Record<string, unknown> = { raw: buildVramPatch(ref, vram) };
+    if (baseHash) patchParams.baseHash = baseHash;
+    await rpc("config.patch", patchParams);
+    app.log.info({ ref, vram }, vram ? "VRAM checkbox: num_gpu liberado no modelo (carregamento volta à VRAM)" : "VRAM checkbox: num_gpu=0 fixado no modelo (carrega na RAM quando não estiver carregado)");
+  };
+  const next = vramWriteChain.then(run, run);
+  vramWriteChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next.catch((error: unknown) => {
+    // RAM pedida e não aplicada = modelo subindo na VRAM contra a vontade do
+    // usuário: melhor falhar a mensagem com erro claro do que mentir. No modo
+    // VRAM (padrão) apenas limpar o fixo falhou — o chat pode seguir.
+    if (vram) {
+      app.log.warn({ err: error, ref }, "VRAM checkbox: falhou limpar num_gpu do modelo; seguindo com a config atual");
+      return;
+    }
+    throw new Error(`Não foi possível configurar o carregamento em RAM de ${ref} (VRAM desmarcada): ${error instanceof Error ? error.message : String(error)}`);
+  });
 }
 async function ollamaModelSizes() {
   const sizes = new Map<string, number>();
@@ -530,7 +568,11 @@ app.get("/api/chat/message", async (request) => {
 });
 app.post("/api/chat/send", async (request) => {
   const body = parse(ChatSendRequestSchema, request.body);
-  const payload = record(await rpc("chat.send", { ...body, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: body.idempotencyKey ?? randomUUID() }));
+  // vram/modelRef são do console (checkbox VRAM) — o chat.send do Gateway tem
+  // schema fechado e rejeitaria campos extras, então são removidos do payload.
+  const { vram, modelRef, ...chatParams } = body;
+  if (vram !== undefined) await applyVramLoading(vram, modelRef);
+  const payload = record(await rpc("chat.send", { ...chatParams, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: body.idempotencyKey ?? randomUUID() }));
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   if (!runId) throw new Error("Gateway did not return a runId");
   return { runId, ...(typeof payload.status === "string" ? { status: payload.status } : {}) };
