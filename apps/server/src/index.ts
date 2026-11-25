@@ -429,6 +429,18 @@ app.post("/api/warm-voice", async (_request, response) => {
 });
 app.get("/api/voice-status", async () => ({ loaded: await ollamaLoadedModels(), activeRuns: activeRuns.size }));
 
+// Estado do checkbox VRAM para o chat: reflete a config ATUAL do Gateway para o
+// modelo informado (desmarcado = num_gpu 0 pinado). Provedores que não são
+// Ollama retornam vram=null (a UI esconde o checkbox).
+app.get("/api/vram", async (request) => {
+  const query = record(request.query);
+  const ref = ollamaModelRef(typeof query.modelRef === "string" ? query.modelRef : undefined);
+  if (!ref) return { vram: null as boolean | null };
+  const snapshot = record(await rpc("config.get", {}));
+  const current = readNumGpu(snapshot.config ?? snapshot.parsed, ref);
+  return { vram: current !== 0 };
+});
+
 async function assertValidSessionWorkspacePath(workspacePath: string): Promise<void> {
   if (!isAbsolute(workspacePath)) {
     throw Object.assign(new Error("workspacePath must be an absolute path"), { code: "INVALID_WORKSPACE_PATH" });

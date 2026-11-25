@@ -61,6 +61,17 @@ export const api = {
       });
     } catch { /* melhor esforço: a fala funciona mesmo sem aquecimento */ }
   },
+  // Estado do checkbox VRAM (config atual do Gateway para o modelo): true = VRAM,
+  // false = num_gpu=0 pinado (RAM), null = modelo não-Ollama (esconde o checkbox).
+  vramStatus: async (modelRef: string): Promise<boolean | null> => {
+    const token = getStoredToken();
+    const response = await fetch(`${API_BASE_URL}/vram?${new URLSearchParams({ modelRef })}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) throw new Error(`Estado VRAM indisponível (HTTP ${response.status})`);
+    const payload = await response.json() as { vram?: boolean | null };
+    return typeof payload.vram === "boolean" ? payload.vram : null;
+  },
   createAgent: (input: { name: string; workspace: string; model?: string; emoji?: string; avatar?: string }) => client.createAgent(input),
   updateAgent: (input: { agentId: string; name?: string; workspace?: string; model?: string; emoji?: string; avatar?: string }) => client.updateAgent(input),
   deleteAgent: (input: { agentId: string; deleteFiles?: boolean }) => client.deleteAgent({ deleteFiles: false, ...input }),
