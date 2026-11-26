@@ -2,11 +2,11 @@
 // - Resumo: usa o modelo grande JÁ CARREGADO no server local (LM Studio) —
 //   zero carga, zero evicção; se nada estiver carregado, cai no modelo pequeno
 //   configurado (fallback, OPENCLAW_SPEECH_SUMMARY_MODEL);
-// - TTS (fala): backend configurável — padrão Ollama/Phonon. O server local do
-//   LM Studio NÃO expõe endpoint de TTS para o phonon (verificado 2026-11-26);
-//   para outro backend, aponte OPENCLAW_TTS_URL para qualquer server
-//   OpenAI-compatível com /v1/audio/speech (ex.: llama.cpp llama-server com
-//   modelo de TTS suportado);
+// - TTS (fala): backend configurável — padrão o container phonon-tts
+//   (gradium ptts-openai-server, porta 8880): POST /v1/audio/speech, WAV
+//   16-bit mono 24 kHz, vozes pt do catálogo oficial. Para outro backend,
+//   aponte OPENCLAW_TTS_URL para qualquer server OpenAI-compatível com
+//   /v1/audio/speech.
 // - fila serial: um trabalho de voz por vez (resumo/fala/aquecimento), evitando
 //   que cliques simultâneos disputem o server local entre si;
 // - aquecimento: o Ollama expira o modelo em ~5 min (keep_alive do endpoint de

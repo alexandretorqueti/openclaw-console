@@ -29,14 +29,15 @@ const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
 // (/v1/chat/completions) + estado dos modelos (/api/v0/models).
 const lmstudioUrl = (process.env.OPENCLAW_LMSTUDIO_URL?.trim() || "http://127.0.0.1:12360").replace(/\/$/, "");
 const lmstudioApiKey = process.env.OPENCLAW_LMSTUDIO_API_KEY?.trim() || "";
-// Backend de TTS (fala): padrão Ollama/Phonon. O server local do LM Studio não
-// expõe /v1/audio/speech; para outro backend (ex.: llama.cpp llama-server com
-// modelo de TTS) aponte OPENCLAW_TTS_URL/MODEL/VOICE/KEY.
-const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
+// TTS (fala) backend: container phonon-tts (gradium ptts-openai-server, porta
+// 8880) — POST /v1/audio/speech, WAV 16-bit mono 24 kHz nativo do Phonon,
+// vozes pt do catálogo oficial (Débora, Flávia, Manuela-Lu, Davi, Igor, Kauã...).
+// Para outro backend, aponte OPENCLAW_TTS_URL/MODEL/VOICE/KEY.
+const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:8880").replace(/\/$/, "");
 const ttsApiKey = process.env.OPENCLAW_TTS_API_KEY?.trim() || "";
 const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "gemma-2-9b-it";
-const ttsModel = process.env.OPENCLAW_TTS_MODEL?.trim() || process.env.OPENCLAW_PHONON_MODEL?.trim() || "phonon:40m-pt";
-const ttsVoice = process.env.OPENCLAW_TTS_VOICE?.trim() || "Isadora";
+const ttsModel = process.env.OPENCLAW_TTS_MODEL?.trim() || process.env.OPENCLAW_PHONON_MODEL?.trim() || "models";
+const ttsVoice = process.env.OPENCLAW_TTS_VOICE?.trim() || "Débora";
 
 // Fila única de voz (resumo + aquecimento) e fila própria de TTS: nunca dois
 // pedidos de voz disputam o Ollama ao mesmo tempo.
@@ -362,7 +363,7 @@ app.post("/api/speech-summary", async (request, reply) => {
   return { summary };
   });
 });
-const TTS_MAX_INPUT = 4000; // limite do backend TTS (Ollama/Phonon): 4096 caracteres por requisição
+const TTS_MAX_INPUT = 4000; // folga de chunking por requisição (aceito pelo backend TTS; mantido conservador para qualquer backend)
 const TTS_SAMPLE_RATE = 24000; // WAV 16-bit mono 24 kHz gerado pelo Phonon
 const TtsRequestSchema = z.object({
   text: z.string().trim().min(1).max(20_000),
@@ -443,12 +444,11 @@ app.post("/api/tts", async (request, reply) => {
   });
 });
 
-// Aquecimento do modelo de TTS: a primeira fala custa ~50s de carga; manter
-// residente custa ~0,17 GB de VRAM (cabe ao lado do modelo grande). O keep_alive
-// do endpoint de áudio é ignorado pelo Ollama (expira ~5 min), então o BFF
-// reaquece a cada 4 min durante 30 min a cada chamada — o frontend repete
-// enquanto a voz está ligada. O aquecimento é sempre enviado: se o modelo já
-// está carregado, o custo é uma geração pequena insignificante.
+// Aquecimento do backend de TTS: a primeira fala pode custar segundos de carga
+// (quantização q8 em CPU); reaquecer mantém o caminho quente. O BFF reaquece a
+// cada 4 min durante 30 min a cada chamada — o frontend repete enquanto a voz
+// está ligada. O aquecimento é sempre enviado: se o backend já está quente, o
+// custo é uma geração pequena insignificante (~1s).
 const voiceWarmer = createVoiceWarmer({
   warm: async () => {
     const upstream = await fetch(`${ttsUrl}/v1/audio/speech`, {
