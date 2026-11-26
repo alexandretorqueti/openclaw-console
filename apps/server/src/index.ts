@@ -21,13 +21,22 @@ import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage
 import { buildVramPatch, ollamaModelRef, readNumGpu, shouldApplyVramPatch } from "./vram.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
-import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type OllamaLoadedModel } from "./voice.js";
+import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type LocalModelInfo } from "./voice.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
-const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
-const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "qwen3:8b";
-const phononModel = process.env.OPENCLAW_PHONON_MODEL?.trim() || "phonon:40m-pt";
+// Server local (LM Studio) — resumo por voz: API OpenAI-compatível
+// (/v1/chat/completions) + estado dos modelos (/api/v0/models).
+const lmstudioUrl = (process.env.OPENCLAW_LMSTUDIO_URL?.trim() || "http://127.0.0.1:12360").replace(/\/$/, "");
+const lmstudioApiKey = process.env.OPENCLAW_LMSTUDIO_API_KEY?.trim() || "";
+// Backend de TTS (fala): padrão Ollama/Phonon. O server local do LM Studio não
+// expõe /v1/audio/speech; para outro backend (ex.: llama.cpp llama-server com
+// modelo de TTS) aponte OPENCLAW_TTS_URL/MODEL/VOICE/KEY.
+const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
+const ttsApiKey = process.env.OPENCLAW_TTS_API_KEY?.trim() || "";
+const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "gemma-2-9b-it";
+const ttsModel = process.env.OPENCLAW_TTS_MODEL?.trim() || process.env.OPENCLAW_PHONON_MODEL?.trim() || "phonon:40m-pt";
+const ttsVoice = process.env.OPENCLAW_TTS_VOICE?.trim() || "Isadora";
 
 // Fila única de voz (resumo + aquecimento) e fila própria de TTS: nunca dois
 // pedidos de voz disputam o Ollama ao mesmo tempo.
@@ -36,7 +45,7 @@ const ttsQueue = createVoiceQueue();
 
 // Runs de chat ativos vistos nos eventos do Gateway (runId → último delta).
 // Usado para esperar a GPU livre antes de CARREGAR o modelo pequeno de resumo
-// (carregamento com geração ativa causa evicção/ping-pong; fonon não evicta).
+// (carregamento com geração ativa disputa VRAM e causa evicção/ping-pong).
 const activeRuns = new Map<string, number>();
 function trackChatRun(event: { runId?: string; state: string }): void {
   if (!event.runId) return;
@@ -53,18 +62,27 @@ async function waitForNoActiveRuns(timeoutMs: number): Promise<boolean> {
   return activeRuns.size === 0;
 }
 
-async function ollamaLoadedModels(): Promise<OllamaLoadedModel[]> {
+// Modelos do server local (LM Studio) com estado (loaded/not-loaded), tipo e
+// quantização — base para escolher o modelo do resumo (/api/v0/models).
+async function localModels(): Promise<LocalModelInfo[]> {
   try {
-    const response = await fetch(`${ollamaUrl}/api/ps`, { signal: AbortSignal.timeout(3_000) });
+    const response = await fetch(`${lmstudioUrl}/api/v0/models`, {
+      headers: lmstudioApiKey ? { Authorization: `Bearer ${lmstudioApiKey}` } : {},
+      signal: AbortSignal.timeout(3_000),
+    });
     if (!response.ok) return [];
     const payload = record(await response.json());
-    const models = Array.isArray(payload.models) ? payload.models : [];
+    const models = Array.isArray(payload.data) ? payload.data : [];
     return models.flatMap((value) => {
       const model = record(value);
-      const name = typeof model.name === "string" && model.name.trim() ? model.name.trim() : undefined;
-      if (!name) return [];
-      const sizeVramBytes = typeof model.size_vram === "number" && Number.isFinite(model.size_vram) ? model.size_vram : typeof model.size === "number" && Number.isFinite(model.size) ? model.size : 0;
-      return [{ name, sizeVramBytes }];
+      const id = typeof model.id === "string" && model.id.trim() ? model.id.trim() : undefined;
+      if (!id) return [];
+      return [{
+        id,
+        state: typeof model.state === "string" ? model.state : undefined,
+        type: typeof model.type === "string" ? model.type : undefined,
+        quantization: typeof model.quantization === "string" ? model.quantization : model.quantization === null ? null : undefined,
+      }];
     });
   } catch { return []; }
 }
@@ -250,7 +268,7 @@ function applyVramLoading(vram: boolean, modelRef: string | undefined): Promise<
 async function ollamaModelSizes() {
   const sizes = new Map<string, number>();
   try {
-    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2_500) });
+    const response = await fetch(`${ttsUrl}/api/tags`, { signal: AbortSignal.timeout(2_500) });
     if (!response.ok) return sizes;
     const payload = record(await response.json());
     const models = Array.isArray(payload.models) ? payload.models : [];
@@ -274,9 +292,12 @@ app.get("/healthz", async (_request, reply) => reply.code(gatewayReady() ? 200 :
 app.get("/api/status", async () => status());
 app.get("/api/agents", async () => normalizeAgents(await rpc("agents.list", {})));
 app.get("/api/models", async () => {
-  const [payloadRaw, ollamaSizes] = await Promise.all([rpc("models.list", { view: "configured" }), ollamaModelSizes()]);
+  const payloadRaw = await rpc("models.list", { view: "configured" });
   const payload = record(payloadRaw);
   const rows = Array.isArray(payload.models) ? payload.models : [];
+  // Tamanhos só vêm do Ollama (o server local não expõe tamanho): consulta
+  // apenas se houver modelo Ollama no catálogo, evitando chamada morta.
+  const ollamaSizes = rows.some((value) => record(value).provider === "ollama") ? await ollamaModelSizes() : new Map<string, number>();
   const models = rows.flatMap((value) => {
     const row = record(value);
     if (typeof row.id !== "string" || typeof row.name !== "string" || typeof row.provider !== "string") return [];
@@ -292,59 +313,71 @@ app.post("/api/speech-summary", async (request, reply) => {
   // Usa o modelo grande JÁ RESIDENTE para resumir (zero carga, zero evicção).
   // O modelo pequeno (fallback) só é usado quando nada está residente; nesse
   // caso, se houver geração ativa, espera a GPU liberar para não causar ping-pong.
-  const loaded = await ollamaLoadedModels();
+  const loaded = await localModels();
   const model = pickSummaryModel(loaded, speechSummaryModel);
-  if (model === speechSummaryModel && !loaded.some((item) => item.name.toLowerCase() === speechSummaryModel.toLowerCase()) && activeRuns.size > 0) {
+  if (model === speechSummaryModel && !loaded.some((item) => item.id.toLowerCase() === speechSummaryModel.toLowerCase()) && activeRuns.size > 0) {
     const idle = await waitForNoActiveRuns(60_000);
-    app.log.info({ idle, activeRuns: activeRuns.size }, "speech summary waited for Ollama to be free before loading the fallback model");
+    app.log.info({ idle, activeRuns: activeRuns.size }, "speech summary waited for the local server to be free before loading the fallback model");
   }
-  const upstream = await fetch(`${ollamaUrl}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      think: false,
-      options: { temperature: 0.2 },
-      prompt: [
-        "Você é um resumidor para leitura em voz alta.",
-        "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
-        "Escreva em português brasileiro, em no máximo 3 frases curtas.",
-        "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
-        "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
-        "Texto para resumir:",
-        body.text,
-      ].join("\n\n"),
-    }),
-    signal: AbortSignal.timeout(120_000),
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${lmstudioUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(lmstudioApiKey ? { Authorization: `Bearer ${lmstudioApiKey}` } : {}) },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        // Folga para modelos com raciocínio (thinking consome tokens do budget).
+        max_tokens: 1500,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Você é um resumidor para leitura em voz alta.",
+              "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
+              "Escreva em português brasileiro, em no máximo 3 frases curtas.",
+              "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
+              "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
+            ].join("\n"),
+          },
+          { role: "user", content: body.text },
+        ],
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (error: unknown) {
+    app.log.error({ err: error }, "server local indisponível (falha de rede) no resumo");
+    throw Object.assign(new Error("Server local indisponível para o resumo por voz"), { code: "UNAVAILABLE" });
+  }
   if (!upstream.ok) {
     const detail = (await upstream.text()).slice(0, 300);
-    app.log.warn({ status: upstream.status, detail, model }, "Ollama speech summary failed");
+    app.log.warn({ status: upstream.status, detail, model }, "LM Studio speech summary failed");
     return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
   }
   const payload = record(await upstream.json());
-  const summary = typeof payload.response === "string" ? payload.response.trim() : "";
-  if (!summary) throw Object.assign(new Error("Ollama não retornou um resumo"), { code: "UPSTREAM_ERROR" });
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const message = choices.length > 0 ? record(record(choices[0]).message) : {};
+  const summary = typeof message.content === "string" ? message.content.trim() : "";
+  if (!summary) throw Object.assign(new Error("LM Studio não retornou um resumo"), { code: "UPSTREAM_ERROR" });
   return { summary };
   });
 });
-const PHONON_MAX_INPUT = 4000; // limite do Ollama: 4096 caracteres por requisição
-const PHONON_SAMPLE_RATE = 24000; // WAV 16-bit mono 24 kHz gerado pelo Phonon
+const TTS_MAX_INPUT = 4000; // limite do backend TTS (Ollama/Phonon): 4096 caracteres por requisição
+const TTS_SAMPLE_RATE = 24000; // WAV 16-bit mono 24 kHz gerado pelo Phonon
 const TtsRequestSchema = z.object({
   text: z.string().trim().min(1).max(20_000),
-  voice: z.string().trim().min(1).default("Isadora"),
-  model: z.string().trim().min(1).default("phonon:40m-pt"),
+  voice: z.string().trim().min(1).default(ttsVoice),
+  model: z.string().trim().min(1).default(ttsModel),
 }).strict();
 
 function splitForSpeech(text: string): string[] {
-  if (text.length <= PHONON_MAX_INPUT) return [text];
+  if (text.length <= TTS_MAX_INPUT) return [text];
   const chunks: string[] = [];
   let remaining = text;
-  while (remaining.length > PHONON_MAX_INPUT) {
-    const slice = remaining.slice(0, PHONON_MAX_INPUT);
+  while (remaining.length > TTS_MAX_INPUT) {
+    const slice = remaining.slice(0, TTS_MAX_INPUT);
     const breakAt = Math.max(slice.lastIndexOf(". "), slice.lastIndexOf("! "), slice.lastIndexOf("? "), slice.lastIndexOf("\n"), slice.lastIndexOf(", "));
-    const cut = breakAt > PHONON_MAX_INPUT / 2 ? breakAt + 1 : PHONON_MAX_INPUT;
+    const cut = breakAt > TTS_MAX_INPUT / 2 ? breakAt + 1 : TTS_MAX_INPUT;
     chunks.push(remaining.slice(0, cut).trim());
     remaining = remaining.slice(cut).trim();
   }
@@ -354,7 +387,7 @@ function splitForSpeech(text: string): string[] {
 
 function extractWavPcm(buf: Buffer): Buffer {
   const dataAt = buf.indexOf("data");
-  if (dataAt === -1 || dataAt + 8 > buf.length) throw Object.assign(new Error("Resposta de áudio inválida do Ollama"), { code: "UPSTREAM_ERROR" });
+  if (dataAt === -1 || dataAt + 8 > buf.length) throw Object.assign(new Error("Resposta de áudio inválida do backend TTS"), { code: "UPSTREAM_ERROR" });
   const declaredSize = buf.readUInt32LE(dataAt + 4);
   const size = Math.min(declaredSize === 0xffffffff ? buf.length - dataAt - 8 : declaredSize, buf.length - dataAt - 8);
   return buf.subarray(dataAt + 8, dataAt + 8 + size);
@@ -369,8 +402,8 @@ function buildWav(pcm: Buffer): Buffer {
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20); // PCM
   header.writeUInt16LE(1, 22); // mono
-  header.writeUInt32LE(PHONON_SAMPLE_RATE, 24);
-  header.writeUInt32LE(PHONON_SAMPLE_RATE * 2, 28);
+  header.writeUInt32LE(TTS_SAMPLE_RATE, 24);
+  header.writeUInt32LE(TTS_SAMPLE_RATE * 2, 28);
   header.writeUInt16LE(2, 32);
   header.writeUInt16LE(16, 34);
   header.write("data", 36);
@@ -384,16 +417,22 @@ app.post("/api/tts", async (request, reply) => {
   const chunks = splitForSpeech(body.text);
   const pcmParts: Buffer[] = [];
   for (const chunk of chunks) {
-    const upstream = await fetch(`${ollamaUrl}/v1/audio/speech`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "audio/wav" },
-      body: JSON.stringify({ model: body.model, input: chunk, voice: body.voice, response_format: "wav" }),
-      signal: AbortSignal.timeout(120_000),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${ttsUrl}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "audio/wav", ...(ttsApiKey ? { Authorization: `Bearer ${ttsApiKey}` } : {}) },
+        body: JSON.stringify({ model: body.model, input: chunk, voice: body.voice, response_format: "wav" }),
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (error: unknown) {
+      app.log.error({ err: error }, "TTS backend indisponível (falha de rede)");
+      throw Object.assign(new Error("Backend de TTS indisponível"), { code: "UNAVAILABLE" });
+    }
     if (!upstream.ok) {
       const detail = (await upstream.text()).slice(0, 500);
-      app.log.error({ status: upstream.status, detail, model: body.model, voice: body.voice }, "Ollama Phonon TTS failed");
-      return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `TTS Ollama error ${upstream.status}` } });
+      app.log.error({ status: upstream.status, detail, model: body.model, voice: body.voice }, "TTS upstream failed");
+      return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: `TTS upstream error ${upstream.status}` } });
     }
     pcmParts.push(extractWavPcm(Buffer.from(await upstream.arrayBuffer())));
   }
@@ -404,21 +443,21 @@ app.post("/api/tts", async (request, reply) => {
   });
 });
 
-// Aquecimento do Phonon: a primeira fala custa ~50s de carga; manter residente
-// custa ~0,17 GB de VRAM (cabe ao lado do modelo grande). keep_alive no endpoint
-// de áudio é ignorado pelo Ollama (expira ~5 min), então o BFF reaquece a cada
-// 4 min durante 30 min a cada chamada — o frontend repete enquanto a voz está ligada.
+// Aquecimento do modelo de TTS: a primeira fala custa ~50s de carga; manter
+// residente custa ~0,17 GB de VRAM (cabe ao lado do modelo grande). O keep_alive
+// do endpoint de áudio é ignorado pelo Ollama (expira ~5 min), então o BFF
+// reaquece a cada 4 min durante 30 min a cada chamada — o frontend repete
+// enquanto a voz está ligada. O aquecimento é sempre enviado: se o modelo já
+// está carregado, o custo é uma geração pequena insignificante.
 const voiceWarmer = createVoiceWarmer({
   warm: async () => {
-    const loaded = await ollamaLoadedModels();
-    if (loaded.some((model) => isPhononModel(model.name))) return;
-    const upstream = await fetch(`${ollamaUrl}/v1/audio/speech`, {
+    const upstream = await fetch(`${ttsUrl}/v1/audio/speech`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "audio/wav" },
-      body: JSON.stringify({ model: phononModel, input: "aquecimento", voice: "Isadora", response_format: "wav" }),
+      headers: { "Content-Type": "application/json", Accept: "audio/wav", ...(ttsApiKey ? { Authorization: `Bearer ${ttsApiKey}` } : {}) },
+      body: JSON.stringify({ model: ttsModel, input: "aquecimento", voice: ttsVoice, response_format: "wav" }),
       signal: AbortSignal.timeout(180_000),
     });
-    if (!upstream.ok) throw new Error(`Aquecimento do Phonon falhou (HTTP ${upstream.status})`);
+    if (!upstream.ok) throw new Error(`Aquecimento do TTS falhou (HTTP ${upstream.status})`);
     await upstream.arrayBuffer();
   },
 });
@@ -427,7 +466,7 @@ app.post("/api/warm-voice", async (_request, response) => {
   void voiceQueue.enqueue(() => voiceWarmer.start());
   return response.code(202).send({ ok: true });
 });
-app.get("/api/voice-status", async () => ({ loaded: await ollamaLoadedModels(), activeRuns: activeRuns.size }));
+app.get("/api/voice-status", async () => ({ loaded: await localModels(), activeRuns: activeRuns.size }));
 
 // Estado do checkbox VRAM para o chat: reflete a config ATUAL do Gateway para o
 // modelo informado (desmarcado = num_gpu 0 pinado). Provedores que não são
