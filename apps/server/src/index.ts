@@ -323,47 +323,48 @@ app.post("/api/speech-summary", async (request, reply) => {
     const idle = await waitForNoActiveRuns(60_000);
     app.log.info({ idle, activeRuns: activeRuns.size }, "speech summary waited for the local server to be free before loading the fallback model");
   }
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${lmstudioUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(lmstudioApiKey ? { Authorization: `Bearer ${lmstudioApiKey}` } : {}) },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        // Folga para modelos com raciocínio (thinking consome tokens do budget).
-        max_tokens: 1500,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "Você é um resumidor para leitura em voz alta.",
-              "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
-              "Escreva em português brasileiro, em no máximo 3 frases curtas.",
-              "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
-              "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
-            ].join("\n"),
-          },
-          { role: "user", content: body.text },
-        ],
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-  } catch (error: unknown) {
-    app.log.error({ err: error }, "server local indisponível (falha de rede) no resumo");
-    throw Object.assign(new Error("Server local indisponível para o resumo por voz"), { code: "UNAVAILABLE" });
+  const summaryMessages = [
+    {
+      role: "system",
+      content: [
+        "Você é um resumidor para leitura em voz alta.",
+        "Responda SOMENTE com o resumo final, sem raciocínio, análise, explicações, listas de etapas ou marcadores.",
+        "Escreva em português brasileiro, em no máximo 3 frases curtas.",
+        "Ignore códigos, logs, caminhos, URLs, nomes de arquivos e detalhes repetitivos.",
+        "Preserve apenas a informação geral, decisões, problemas e próximos passos importantes.",
+      ].join("\n"),
+    },
+    { role: "user", content: body.text },
+  ];
+  // Modelos de raciocínio podem gastar todo o budget no thinking e devolver
+  // content vazio (observado com o qwen3.5-4b residente, ~metade das vezes em
+  // produção): se o resumo vier vazio, tenta de novo com folga maior.
+  for (const maxTokens of [1500, 4096]) {
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${lmstudioUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(lmstudioApiKey ? { Authorization: `Bearer ${lmstudioApiKey}` } : {}) },
+        body: JSON.stringify({ model, temperature: 0.2, max_tokens: maxTokens, messages: summaryMessages }),
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (error: unknown) {
+      app.log.error({ err: error }, "server local indisponível (falha de rede) no resumo");
+      throw Object.assign(new Error("Server local indisponível para o resumo por voz"), { code: "UNAVAILABLE" });
+    }
+    if (!upstream.ok) {
+      const detail = (await upstream.text()).slice(0, 300);
+      app.log.warn({ status: upstream.status, detail, model }, "LM Studio speech summary failed");
+      return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
+    }
+    const payload = record(await upstream.json());
+    const choices = Array.isArray(payload.choices) ? payload.choices : [];
+    const message = choices.length > 0 ? record(record(choices[0]).message) : {};
+    const summary = typeof message.content === "string" ? message.content.trim() : "";
+    if (summary) return { summary };
+    app.log.warn({ model, maxTokens }, "resumo vazio (thinking consumiu o budget); tentando com mais tokens");
   }
-  if (!upstream.ok) {
-    const detail = (await upstream.text()).slice(0, 300);
-    app.log.warn({ status: upstream.status, detail, model }, "LM Studio speech summary failed");
-    return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
-  }
-  const payload = record(await upstream.json());
-  const choices = Array.isArray(payload.choices) ? payload.choices : [];
-  const message = choices.length > 0 ? record(record(choices[0]).message) : {};
-  const summary = typeof message.content === "string" ? message.content.trim() : "";
-  if (!summary) throw Object.assign(new Error("LM Studio não retornou um resumo"), { code: "UPSTREAM_ERROR" });
-  return { summary };
+  throw Object.assign(new Error("LM Studio não retornou um resumo"), { code: "UPSTREAM_ERROR" });
   });
 });
 const TTS_MAX_INPUT = 4000; // folga de chunking por requisição (aceito pelo backend TTS; mantido conservador para qualquer backend)
