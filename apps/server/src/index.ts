@@ -32,8 +32,11 @@ const lmstudioApiKey = process.env.OPENCLAW_LMSTUDIO_API_KEY?.trim() || "";
 // TTS (fala) backend: container phonon-tts (gradium ptts-openai-server, porta
 // 8880) — POST /v1/audio/speech, WAV 16-bit mono 24 kHz nativo do Phonon,
 // vozes pt do catálogo oficial (Débora, Flávia, Manuela-Lu, Davi, Igor, Kauã...).
-// Para outro backend, aponte OPENCLAW_TTS_URL/MODEL/VOICE/KEY.
-const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:8880").replace(/\/$/, "");
+// Para outro backend, aponte OPENCLAW_TTS_URL/MODEL/VOICE/KEY. Não herda
+// OPENCLAW_OLLAMA_URL: o Ollama foi descontinuado como backend de fala — o env
+// dele segue servindo só a consulta de tamanho dos modelos ollama/* (/api/tags).
+const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || "http://127.0.0.1:8880").replace(/\/$/, "");
+const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
 const ttsApiKey = process.env.OPENCLAW_TTS_API_KEY?.trim() || "";
 const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "gemma-2-9b-it";
 const ttsModel = process.env.OPENCLAW_TTS_MODEL?.trim() || process.env.OPENCLAW_PHONON_MODEL?.trim() || "models";
@@ -269,7 +272,7 @@ function applyVramLoading(vram: boolean, modelRef: string | undefined): Promise<
 async function ollamaModelSizes() {
   const sizes = new Map<string, number>();
   try {
-    const response = await fetch(`${ttsUrl}/api/tags`, { signal: AbortSignal.timeout(2_500) });
+    const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2_500) });
     if (!response.ok) return sizes;
     const payload = record(await response.json());
     const models = Array.isArray(payload.models) ? payload.models : [];
