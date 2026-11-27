@@ -219,6 +219,21 @@ export const ChatEventSchema = z.discriminatedUnion("state", [
 ]);
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
 
+// Atividade ao vivo (ferramentas/pensamento) derivada dos eventos `agent` do
+// Gateway, reempacada como ChatMessage para reaproveitar a renderização do
+// histórico. O id é determinístico (live-*) para upsert no front; o histórico
+// persistido assume a lista no fim da execução (evento terminal → loadHistory).
+export const ChatActivityEventSchema = z
+  .object({
+    runId: NonEmptyStringSchema,
+    sessionKey: NonEmptyStringSchema,
+    agentId: z.string().optional(),
+    seq: z.number().int().nonnegative(),
+    message: ChatMessageSchema,
+  })
+  .strict();
+export type ChatActivityEvent = z.infer<typeof ChatActivityEventSchema>;
+
 export const ApiErrorSchema = z
   .object({
     error: z
@@ -491,6 +506,7 @@ export type SessionChangedEvent = z.infer<typeof SessionChangedEventSchema>;
 
 export const ConsoleEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("chat"), data: ChatEventSchema }).strict(),
+  z.object({ type: z.literal("activity"), data: ChatActivityEventSchema }).strict(),
   z.object({ type: z.literal("status"), data: GatewayStatusSchema }).strict(),
   z.object({ type: z.literal("sessions"), data: SessionChangedEventSchema }).strict(),
 ]);

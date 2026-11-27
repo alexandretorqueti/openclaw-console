@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
+import { normalizeAgentEvent, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
 
 test("derives context percentage and keeps each session model independent", () => {
   const result = normalizeSessions({ sessions: [
@@ -160,4 +160,74 @@ test("SSE chat events preserve the run lifecycle fields required by the motor", 
     stopReason: "failed",
     errorMessage: "model unavailable",
   });
+});
+
+test("live agent activity: tool start/result become upsertable ChatMessages", () => {
+  const start = normalizeAgentEvent({
+    type: "event",
+    event: "agent",
+    seq: 3,
+    payload: {
+      runId: "run-1", sessionKey: "agent:main:dashboard:x", agentId: "main", ts: 1_700_000_000_000,
+      stream: "tool",
+      data: { phase: "start", name: "exec", toolCallId: "call-1", args: { command: "pwd" } },
+    },
+  });
+  assert.ok(start);
+  assert.deepEqual({ id: start.message.id, role: start.message.role, status: start.message.status, toolName: start.message.toolName, content: start.message.content }, {
+    id: "live-tool-call-1", role: "tool", status: "requested", toolName: "exec", content: "exec\n{\n  \"command\": \"pwd\"\n}",
+  });
+
+  const result = normalizeAgentEvent({
+    type: "event",
+    event: "agent",
+    seq: 5,
+    payload: {
+      runId: "run-1", sessionKey: "agent:main:dashboard:x", seq: 5,
+      stream: "tool",
+      data: { phase: "result", name: "exec", toolCallId: "call-1", isError: true, result: { content: [{ type: "text", text: "boom" }] } },
+    },
+  });
+  assert.ok(result);
+  assert.deepEqual({ id: result.message.id, role: result.message.role, status: result.message.status, content: result.message.content }, {
+    id: "live-tool-call-1", role: "tool", status: "error", content: "boom",
+  });
+});
+
+test("live agent activity: thinking carries cumulative text and unknown streams are ignored", () => {
+  const thinking = normalizeAgentEvent({
+    type: "event",
+    event: "agent",
+    seq: 2,
+    payload: {
+      runId: "run-2", sessionKey: "agent:main:dashboard:y", seq: 2,
+      stream: "thinking",
+      data: { text: "vou pensar", delta: "pensar" },
+    },
+  });
+  assert.ok(thinking);
+  assert.deepEqual({ id: thinking.message.id, role: thinking.message.role, content: thinking.message.content, thinking: thinking.message.thinking }, {
+    id: "live-thinking-run-2", role: "assistant", content: "", thinking: "vou pensar",
+  });
+
+  assert.equal(normalizeAgentEvent({ type: "event", event: "agent", payload: { runId: "r", sessionKey: "s", stream: "lifecycle", data: { phase: "start" } } }), undefined);
+  assert.equal(normalizeAgentEvent({ type: "event", event: "agent", payload: { runId: "r", stream: "tool", data: { phase: "start", name: "exec" } } }), undefined); // sem sessionKey
+  assert.equal(normalizeAgentEvent({ type: "event", event: "chat", payload: { state: "delta", runId: "r", sessionKey: "s" } }), undefined);
+});
+
+test("live agent activity: tool update keeps the card alive and truncates huge payloads", () => {
+  const update = normalizeAgentEvent({
+    type: "event",
+    event: "agent",
+    seq: 4,
+    payload: {
+      runId: "run-3", sessionKey: "agent:main:dashboard:z", seq: 4,
+      stream: "tool",
+      data: { phase: "update", name: "exec", toolCallId: "call-9", partialResult: "x".repeat(20_000) },
+    },
+  });
+  assert.ok(update);
+  assert.equal(update.message.id, "live-tool-call-9");
+  assert.equal(update.message.status, "running");
+  assert.ok(update.message.content.length < 20_000 && update.message.content.endsWith("(truncado)"));
 });

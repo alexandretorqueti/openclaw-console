@@ -17,7 +17,7 @@ import {
   type GatewayStatus,
 } from "@alexandretorqueti/openclaw-console-contracts";
 import { GatewayClient, type GatewayConnectionStatus, type GatewayEventFrame } from "@alexandretorqueti/openclaw-gateway-client";
-import { normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
+import { normalizeAgentEvent, normalizeAgents, normalizeChatEvent, normalizeHistory, normalizeMessage, normalizeSessions, record } from "./normalizers.js";
 import { buildVramPatch, ollamaModelRef, readNumGpu, shouldApplyVramPatch } from "./vram.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
@@ -194,7 +194,7 @@ function redactGatewayUrl(value: string) {
   try { const url = new URL(value); url.username = ""; url.password = ""; for (const key of [...url.searchParams.keys()]) if (/token|password|secret|key/i.test(key)) url.searchParams.set(key, "***"); return url.toString(); }
   catch { return "gateway"; }
 }
-function sse(event: "chat" | "status" | "sessions", data: unknown) {
+function sse(event: "chat" | "activity" | "status" | "sessions", data: unknown) {
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of sseClients) { try { client.write(frame); } catch { sseClients.delete(client); } }
 }
@@ -204,6 +204,10 @@ gateway.on("connected", () => { gatewayError = undefined; sse("status", status()
 gateway.on("error", (error: Error) => { gatewayError = error.message; sse("status", status()); });
 gateway.on("event", (frame: GatewayEventFrame) => {
   const event = normalizeChatEvent(frame); if (event) { trackChatRun(event); sse("chat", event); }
+  // Atividade ao vivo: ferramentas/pensamento chegam como eventos `agent` do
+  // Gateway. Sem repassar, o front só os vê quando o histórico é rebuscado no
+  // fim da execução (final/aborted/error) ou num F5.
+  const activity = normalizeAgentEvent(frame); if (activity) sse("activity", activity);
   if (frame.event === "sessions.changed") {
     const payload = record(frame.payload);
     // O gateway aninha a sessão em payload.session (buildSessionEventSnapshot /

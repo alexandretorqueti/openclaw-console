@@ -1,9 +1,11 @@
 import {
   AgentSchema,
+  ChatActivityEventSchema,
   ChatEventSchema,
   ChatMessageSchema,
   SessionSchema,
   type Agent,
+  type ChatActivityEvent,
   type ChatEvent,
   type ChatMessage,
   type Session,
@@ -195,6 +197,84 @@ export function normalizeHistory(payload: unknown, sessionKey: string) {
     ...(bool(root.hasMore) !== undefined ? { hasMore: bool(root.hasMore) } : {}),
     ...(number(root.nextOffset) !== undefined ? { nextOffset: number(root.nextOffset) } : {}),
   };
+}
+
+// ── Atividade ao vivo (eventos `agent` do Gateway) ──────────────────────────
+// O Gateway transmite ferramentas/pensamento como eventos `agent` (streams
+// "tool"/"thinking"); o chat delta só carrega texto. Sem isso, os blocos
+// "Atividade técnica"/"Pensando" só aparecem quando o histórico persistido é
+// rebuscado no fim da execução (ou num F5). Reempacamos como ChatMessage para
+// reaproveitar a renderização do histórico, com ids `live-*` determinísticos
+// (upsert por id no front; o loadHistory terminal substitui tudo pela versão
+// persistida).
+const LIVE_CONTENT_LIMIT = 16_000;
+const LIVE_THINKING_LIMIT = 24_000;
+const LIVE_ARGS_LIMIT = 6_000;
+
+function truncate(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit)}\n… (truncado)` : value;
+}
+
+function liveResultText(value: unknown): string {
+  if (typeof value === "string") return truncate(value, LIVE_CONTENT_LIMIT);
+  if (Array.isArray(value)) {
+    const text = contentText(value);
+    if (text) return truncate(text, LIVE_CONTENT_LIMIT);
+  }
+  const row = record(value);
+  if (Object.keys(row).length === 0) return typeof value === "object" && value !== null ? "" : String(value ?? "");
+  const content = row.content !== undefined ? contentText(row.content) : "";
+  if (content) return truncate(content, LIVE_CONTENT_LIMIT);
+  try { return truncate(JSON.stringify(value, null, 2) ?? "", LIVE_CONTENT_LIMIT); }
+  catch { return ""; }
+}
+
+function liveArgsText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return truncate(value, LIVE_ARGS_LIMIT);
+  try { return truncate(JSON.stringify(value, null, 2) ?? "", LIVE_ARGS_LIMIT); }
+  catch { return ""; }
+}
+
+export function normalizeAgentEvent(frame: GatewayEventFrame): ChatActivityEvent | undefined {
+  if (frame.event !== "agent") return undefined;
+  const payload = record(frame.payload);
+  const runId = text(payload.runId);
+  const sessionKey = text(payload.sessionKey);
+  const stream = text(payload.stream);
+  const data = record(payload.data);
+  if (!runId || !sessionKey) return undefined;
+  const ts = timestamp(payload.ts) ?? Date.now();
+  const agentId = text(payload.agentId);
+  const seq = number(payload.seq) ?? frame.seq ?? 0;
+  let message: ChatMessage | undefined;
+  if (stream === "tool") {
+    const phase = text(data.phase)?.toLowerCase();
+    const name = text(data.name) ?? text(data.toolName) ?? "ferramenta";
+    const toolCallId = text(data.toolCallId) ?? `${runId}:${seq}`;
+    const id = `live-tool-${toolCallId}`;
+    if (phase === "start") {
+      const args = liveArgsText(data.args ?? data.input);
+      message = { id, role: "tool", content: args ? `${name}\n${args}` : name, status: "requested", toolName: name, runId, createdAt: ts };
+    } else if (phase === "update") {
+      const partial = data.partialResult;
+      if (partial === undefined) return undefined;
+      message = { id, role: "tool", content: liveResultText(partial), status: "running", toolName: name, runId, createdAt: ts };
+    } else if (phase === "result") {
+      message = {
+        id, role: "tool", content: liveResultText(data.result),
+        status: bool(data.isError) ? "error" : "completed", toolName: name, runId, createdAt: ts,
+      };
+    }
+  } else if (stream === "thinking") {
+    const thinking = text(data.text);
+    if (thinking) message = { id: `live-thinking-${runId}`, role: "assistant", content: "", thinking: truncate(thinking, LIVE_THINKING_LIMIT), runId, createdAt: ts };
+  }
+  if (!message) return undefined;
+  const parsed = ChatActivityEventSchema.safeParse({
+    runId, sessionKey, ...(agentId ? { agentId } : {}), seq, message,
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function normalizeChatEvent(frame: GatewayEventFrame): ChatEvent | undefined {

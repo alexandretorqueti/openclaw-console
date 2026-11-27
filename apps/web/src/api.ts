@@ -1,7 +1,7 @@
 import { OpenClawConsoleClient } from "@alexandretorqueti/openclaw-console-client";
 import { API_BASE_URL, getStoredToken } from "./auth";
 import type {
-  Agent, AgentContextFile, ChatEvent as ContractChatEvent, ChatMessage, GatewayStatus as ContractGatewayStatus, ModelChoice, NotificationItem, PatchSessionRequest, Session, SessionChangedEvent, SessionSummary,
+  Agent, AgentContextFile, ChatEvent as ContractChatEvent, ChatActivityEvent as ContractChatActivityEvent, ChatMessage, GatewayStatus as ContractGatewayStatus, ModelChoice, NotificationItem, PatchSessionRequest, Session, SessionChangedEvent, SessionSummary,
 } from "@alexandretorqueti/openclaw-console-contracts";
 
 export type GatewayStatus = ContractGatewayStatus & { serverVersion?: string };
@@ -13,6 +13,7 @@ export type ApiModel = ModelChoice;
 export type ApiAgentContextFile = AgentContextFile;
 export type ApiSessionSummary = SessionSummary;
 export type ChatEvent = ContractChatEvent;
+export type ApiActivityEvent = ContractChatActivityEvent;
 
 const client = new OpenClawConsoleClient({ baseUrl: API_BASE_URL, authToken: getStoredToken() });
 const messages = (rows: ChatMessage[]): ApiMessage[] => rows.map(({ createdAt, ...message }) => ({ ...message, timestamp: createdAt }));
@@ -90,7 +91,7 @@ export const api = {
   forkSession: (input: { parentSessionKey: string; agentId: string; label?: string }) => client.forkSession(input),
   patchSession: (input: PatchSessionRequest) => client.patchSession(input),
   deleteSession: (input: { key: string; agentId: string }) => client.deleteSession(input),
-  events(handlers: { onChat: (event: ChatEvent) => void; onStatus: (status: GatewayStatus) => void; onSessions: (event: SessionChangedEvent) => void; onOpen?: () => void; onError?: (error: Event | Error) => void }) {
-    return client.subscribeEvents({ onChat: handlers.onChat, onStatus: handlers.onStatus, onSessions: handlers.onSessions, onOpen: handlers.onOpen, onError: handlers.onError });
+  events(handlers: { onChat: (event: ChatEvent) => void; onActivity?: (event: ApiActivityEvent) => void; onStatus: (status: GatewayStatus) => void; onSessions: (event: SessionChangedEvent) => void; onOpen?: () => void; onError?: (error: Event | Error) => void }) {
+    return client.subscribeEvents({ onChat: handlers.onChat, onActivity: handlers.onActivity, onStatus: handlers.onStatus, onSessions: handlers.onSessions, onOpen: handlers.onOpen, onError: handlers.onError });
   },
 };
