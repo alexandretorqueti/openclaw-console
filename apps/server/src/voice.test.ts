@@ -1,6 +1,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel } from "./voice.js";
+import { completionsUrl, createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, rewriteDockerHost, summaryCandidates } from "./voice.js";
+
+test("completionsUrl completa baseUrl com e sem /v1", () => {
+  assert.equal(completionsUrl("http://127.0.0.1:12360"), "http://127.0.0.1:12360/v1/chat/completions");
+  assert.equal(completionsUrl("http://127.0.0.1:12350/v1"), "http://127.0.0.1:12350/v1/chat/completions");
+  assert.equal(completionsUrl("http://x:1/v1/"), "http://x:1/v1/chat/completions");
+});
+
+test("rewriteDockerHost troca hostname interno do Docker por loopback (console roda em network host)", () => {
+  assert.equal(rewriteDockerHost("http://host.docker.internal:12350/v1"), "http://127.0.0.1:12350/v1");
+  assert.equal(rewriteDockerHost("http://gateway.docker.internal:1234"), "http://127.0.0.1:1234");
+  assert.equal(rewriteDockerHost("http://192.168.1.5:1234/v1"), "http://192.168.1.5:1234/v1"); // não toca em IP real
+});
+
+test("summaryCandidates: compactação primeiro, depois residente, depois fallback — sem duplicatas", () => {
+  const candidates = summaryCandidates({
+    compaction: { baseUrl: "http://host.docker.internal:12350/v1", model: "qwen3.5-4b" },
+    lmstudioUrl: "http://127.0.0.1:12360",
+    loadedPick: "qwen/qwen3.8-27b",
+    fallbackModel: "qwen3.5-4b",
+  });
+  assert.deepEqual(candidates.map((c) => [c.source, c.model, c.baseUrl]), [
+    ["compaction", "qwen3.5-4b", "http://127.0.0.1:12350/v1"],
+    ["loaded", "qwen/qwen3.8-27b", "http://127.0.0.1:12360"],
+    ["fallback", "qwen3.5-4b", "http://127.0.0.1:12360"],
+  ]);
+  assert.deepEqual(candidates.map((c) => c.local), [true, true, true]);
+});
+
+test("summaryCandidates: sem compactação → lógica antiga; loaded==fallback vira source fallback (espera GPU)", () => {
+  const semCompaction = summaryCandidates({ lmstudioUrl: "http://127.0.0.1:12360", loadedPick: "qwen3.5-4b", fallbackModel: "qwen3.5-4b" });
+  assert.deepEqual(semCompaction.map((c) => c.source), ["fallback"]); // dedupe: uma entrada só
+  const comCompaction = summaryCandidates({ lmstudioUrl: "http://127.0.0.1:12360", loadedPick: "qwen/qwen3.8-27b", fallbackModel: "qwen3.5-4b" });
+  assert.deepEqual(comCompaction.map((c) => c.source), ["loaded", "fallback"]);
+});
 
 test("prefers the largest loaded model for summaries to avoid load/eviction", () => {
   const loaded = [

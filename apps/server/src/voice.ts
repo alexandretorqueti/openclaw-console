@@ -1,7 +1,11 @@
-// Ordenador de voz do console (migração Ollama → LM Studio, 2026-11-26):
-// - Resumo: usa o modelo grande JÁ CARREGADO no server local (LM Studio) —
-//   zero carga, zero evicção; se nada estiver carregado, cai no modelo pequeno
-//   configurado (fallback, OPENCLAW_SPEECH_SUMMARY_MODEL);
+// Ordenador de voz do console (migração Ollama → LM Studio, 2026-11-26;
+// cascata de resumo 2026-11-28):
+// - Resumo (cascata): (1) modelo configurado no OpenClaw para compactação
+//   (agents.defaults.compaction.model, resolvido via baseUrl do provider na
+//   config do Gateway — pode ser remoto, ex.: LM Studio do Mac via túnel);
+//   (2) maior modelo JÁ CARREGADO no server local — zero carga, zero evicção;
+//   (3) nada carregado → modelo pequeno configurado (fallback,
+//   OPENCLAW_SPEECH_SUMMARY_MODEL, default qwen3.5-4b);
 // - TTS (fala): backend configurável — padrão o container phonon-tts
 //   (gradium ptts-openai-server, porta 8880): POST /v1/audio/speech, WAV
 //   16-bit mono 24 kHz, vozes pt do catálogo oficial. Para outro backend,
@@ -13,6 +17,81 @@
 //   áudio é ignorado) → reaquecer a cada 4 min.
 
 export type LocalModelInfo = { id: string; state?: string; type?: string; quantization?: string | null };
+
+// Candidato a endpoint de resumo por voz: OpenAI-compatível (/v1/chat/completions).
+// `local` = roda no próprio ServerIA (rede host) — usado p/ decisão de espera de GPU.
+export type SummaryEndpoint = {
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  source: "compaction" | "loaded" | "fallback";
+  local: boolean;
+};
+
+/** Completa a URL de chat/completions para um baseUrl de provider (que já pode terminar em /v1). */
+export function completionsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  return /\/v\d+$/.test(trimmed) ? `${trimmed}/chat/completions` : `${trimmed}/v1/chat/completions`;
+}
+
+// A config do Gateway usa hostname interno do Docker (o Gateway roda em bridge);
+// o console roda em network_mode: host, onde o equivalente é o loopback do host.
+export function rewriteDockerHost(baseUrl: string): string {
+  return baseUrl.replace(/\/\/(?:host|gateway)\.docker\.internal(?=[:/]|$)/, "//127.0.0.1");
+}
+
+function isLocalBaseUrl(baseUrl: string): boolean {
+  try { return ["127.0.0.1", "localhost", "::1"].includes(new URL(baseUrl).hostname); } catch { return false; }
+}
+
+/**
+ * Lista ordenada de candidatos ao resumo por voz (pedido do Alexandre,
+ * 2026-11-28): (1) modelo configurado no OpenClaw para COMPACTAÇÃO
+ * (agents.defaults.compaction.model, resolvido via baseUrl do provider na
+ * config do Gateway); (2) lógica normal — maior modelo já carregado no server
+ * local; (3) nada carregado → modelo pequeno de fallback. Duplicatas
+ * (mesmo endpoint+modelo) são removidas mantendo a primeira origem.
+ */
+export function summaryCandidates(options: {
+  compaction?: { baseUrl: string; apiKey?: string; model: string } | null;
+  lmstudioUrl: string;
+  lmstudioApiKey?: string;
+  loadedPick?: string;
+  fallbackModel: string;
+}): SummaryEndpoint[] {
+  const out: SummaryEndpoint[] = [];
+  const seen = new Set<string>();
+  const push = (endpoint: SummaryEndpoint): void => {
+    const key = `${completionsUrl(endpoint.baseUrl)}|${endpoint.model.trim().toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(endpoint);
+  };
+  const local = (model: string, source: SummaryEndpoint["source"]): SummaryEndpoint => ({
+    baseUrl: options.lmstudioUrl,
+    ...(options.lmstudioApiKey ? { apiKey: options.lmstudioApiKey } : {}),
+    model,
+    source,
+    local: isLocalBaseUrl(options.lmstudioUrl),
+  });
+  if (options.compaction) {
+    const baseUrl = rewriteDockerHost(options.compaction.baseUrl);
+    push({
+      baseUrl,
+      ...(options.compaction.apiKey ? { apiKey: options.compaction.apiKey } : {}),
+      model: options.compaction.model,
+      source: "compaction",
+      local: isLocalBaseUrl(baseUrl),
+    });
+  }
+  // pickSummaryModel já devolve o fallback quando nada está carregado — o
+  // source distingue os dois casos (espera de GPU só vale p/ fallback).
+  if (options.loadedPick) {
+    push(local(options.loadedPick, options.loadedPick === options.fallbackModel ? "fallback" : "loaded"));
+  }
+  push(local(options.fallbackModel, "fallback"));
+  return out;
+}
 
 export function isPhononModel(name: string): boolean {
   return name.toLowerCase().includes("phonon");

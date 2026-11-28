@@ -21,7 +21,7 @@ import { normalizeAgentEvent, normalizeAgents, normalizeChatEvent, normalizeHist
 import { buildVramPatch, ollamaModelRef, readNumGpu, shouldApplyVramPatch } from "./vram.js";
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
-import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type LocalModelInfo } from "./voice.js";
+import { completionsUrl, createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, summaryCandidates, type LocalModelInfo } from "./voice.js";
 import { createLocalModelManager } from "./local-model.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
@@ -39,7 +39,7 @@ const lmstudioApiKey = process.env.OPENCLAW_LMSTUDIO_API_KEY?.trim() || "";
 const ttsUrl = (process.env.OPENCLAW_TTS_URL?.trim() || "http://127.0.0.1:8880").replace(/\/$/, "");
 const ollamaUrl = (process.env.OPENCLAW_OLLAMA_URL?.trim() || "http://127.0.0.1:11434").replace(/\/$/, "");
 const ttsApiKey = process.env.OPENCLAW_TTS_API_KEY?.trim() || "";
-const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "gemma-2-9b-it";
+const speechSummaryModel = process.env.OPENCLAW_SPEECH_SUMMARY_MODEL?.trim() || "qwen3.5-4b";
 const ttsModel = process.env.OPENCLAW_TTS_MODEL?.trim() || process.env.OPENCLAW_PHONON_MODEL?.trim() || "models";
 const ttsVoice = process.env.OPENCLAW_TTS_VOICE?.trim() || "Débora";
 
@@ -334,18 +334,70 @@ app.get("/api/models", async () => {
   return ModelsResponseSchema.parse({ models });
 });
 const SpeechSummaryRequestSchema = z.object({ text: z.string().trim().min(1).max(20_000) }).strict();
+// Modelo de COMPACTAÇÃO do OpenClaw (agents.defaults.compaction.model) —
+// preferência 1 do resumo por voz (Alexandre, 2026-11-28). Resolvido contra a
+// config do Gateway (baseUrl do provider; apiKey só se string simples —
+// referências de segredo chegam redigidas do snapshot e provedores locais
+// OpenAI-compatíveis normalmente não usam chave). A config muda pouco: cache 60s.
+let compactionCache: { at: number; value: { baseUrl: string; apiKey?: string; model: string } | null } = { at: 0, value: null };
+async function resolveCompactionEndpoint(): Promise<{ baseUrl: string; apiKey?: string; model: string } | null> {
+  const now = Date.now();
+  if (compactionCache.at !== 0 && now - compactionCache.at < 60_000) return compactionCache.value;
+  let value: { baseUrl: string; apiKey?: string; model: string } | null = null;
+  try {
+    const snapshot = record(await rpc("config.get", {}));
+    const config = record(snapshot.config ?? snapshot.parsed);
+    const ref = record(record(record(config.agents).defaults).compaction).model;
+    const trimmed = typeof ref === "string" ? ref.trim() : "";
+    if (trimmed) {
+      const slash = trimmed.indexOf("/");
+      if (slash <= 0) {
+        // Alias sem provider: tenta como id de modelo no server local.
+        value = { baseUrl: lmstudioUrl, ...(lmstudioApiKey ? { apiKey: lmstudioApiKey } : {}), model: trimmed };
+      } else {
+        const providerId = trimmed.slice(0, slash);
+        const modelId = trimmed.slice(slash + 1);
+        const provider = record(record(record(config.models).providers)[providerId]);
+        const api = typeof provider.api === "string" ? provider.api : "openai-completions";
+        let baseUrl = typeof provider.baseUrl === "string" ? provider.baseUrl.trim() : "";
+        // baseUrl no nível do modelo tem precedência sobre o do provider.
+        if (Array.isArray(provider.models)) {
+          for (const entry of provider.models) {
+            const row = record(entry);
+            if (row.id === modelId && typeof row.baseUrl === "string" && row.baseUrl.trim()) { baseUrl = row.baseUrl.trim(); break; }
+          }
+        }
+        const apiKey = typeof provider.apiKey === "string" && provider.apiKey.trim() ? provider.apiKey.trim() : undefined;
+        if (baseUrl && api === "openai-completions") {
+          value = { baseUrl, ...(apiKey ? { apiKey } : {}), model: modelId };
+        } else {
+          app.log.warn({ provider: providerId, api, hasBaseUrl: Boolean(baseUrl) }, "speech summary: provider de compactação não é OpenAI-compatível com baseUrl; ignorando");
+        }
+      }
+    }
+  } catch (error) {
+    app.log.warn({ err: error }, "speech summary: falha ao ler config de compactação; seguindo para os candidatos locais");
+  }
+  compactionCache = { at: now, value };
+  return value;
+}
 app.post("/api/speech-summary", async (request, reply) => {
   const body = parse(SpeechSummaryRequestSchema, request.body);
   return voiceQueue.enqueue(async () => {
-  // Usa o modelo grande JÁ RESIDENTE para resumir (zero carga, zero evicção).
-  // O modelo pequeno (fallback) só é usado quando nada está residente; nesse
-  // caso, se houver geração ativa, espera a GPU liberar para não causar ping-pong.
+  // Cascata de resumo (Alexandre, 2026-11-28): (1) modelo configurado no
+  // OpenClaw para compactação; (2) lógica normal — maior modelo JÁ RESIDENTE
+  // no server local (zero carga, zero evicção); (3) nada carregado → modelo
+  // pequeno de fallback, que só é carregado esperando a GPU liberar se houver
+  // geração ativa (evita o ping-pong histórico).
   const loaded = await localModels();
-  const model = pickSummaryModel(loaded, speechSummaryModel);
-  if (model === speechSummaryModel && !loaded.some((item) => item.id.toLowerCase() === speechSummaryModel.toLowerCase()) && activeRuns.size > 0) {
-    const idle = await waitForNoActiveRuns(60_000);
-    app.log.info({ idle, activeRuns: activeRuns.size }, "speech summary waited for the local server to be free before loading the fallback model");
-  }
+  const loadedIds = new Set(loaded.filter((item) => (item.state ?? "loaded") === "loaded").map((item) => item.id.toLowerCase()));
+  const candidates = summaryCandidates({
+    compaction: await resolveCompactionEndpoint(),
+    lmstudioUrl,
+    ...(lmstudioApiKey ? { lmstudioApiKey } : {}),
+    loadedPick: pickSummaryModel(loaded, speechSummaryModel),
+    fallbackModel: speechSummaryModel,
+  });
   const summaryMessages = [
     {
       role: "system",
@@ -359,35 +411,50 @@ app.post("/api/speech-summary", async (request, reply) => {
     },
     { role: "user", content: body.text },
   ];
-  // Modelos de raciocínio podem gastar todo o budget no thinking e devolver
-  // content vazio (observado com o qwen3.5-4b residente, ~metade das vezes em
-  // produção): se o resumo vier vazio, tenta de novo com folga maior.
-  for (const maxTokens of [1500, 4096]) {
-    let upstream: Response;
-    try {
-      upstream = await fetch(`${lmstudioUrl}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(lmstudioApiKey ? { Authorization: `Bearer ${lmstudioApiKey}` } : {}) },
-        body: JSON.stringify({ model, temperature: 0.2, max_tokens: maxTokens, messages: summaryMessages }),
-        signal: AbortSignal.timeout(120_000),
-      });
-    } catch (error: unknown) {
-      app.log.error({ err: error }, "server local indisponível (falha de rede) no resumo");
-      throw Object.assign(new Error("Server local indisponível para o resumo por voz"), { code: "UNAVAILABLE" });
+  let failure: { kind: "network" | "upstream" | "empty"; status?: number; detail?: string } | null = null;
+  for (const candidate of candidates) {
+    if (candidate.source === "fallback" && candidate.local && !loadedIds.has(candidate.model.toLowerCase()) && activeRuns.size > 0) {
+      const idle = await waitForNoActiveRuns(60_000);
+      app.log.info({ idle, activeRuns: activeRuns.size, model: candidate.model }, "speech summary waited for the local server to be free before loading the fallback model");
     }
-    if (!upstream.ok) {
-      const detail = (await upstream.text()).slice(0, 300);
-      app.log.warn({ status: upstream.status, detail, model }, "LM Studio speech summary failed");
-      return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
+    // Modelos de raciocínio podem gastar todo o budget no thinking e devolver
+    // content vazio (observado com o qwen3.5-4b, ~metade das vezes em
+    // produção): se o resumo vier vazio, tenta de novo com folga maior.
+    for (const maxTokens of [1500, 4096]) {
+      let upstream: Response;
+      try {
+        upstream = await fetch(completionsUrl(candidate.baseUrl), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(candidate.apiKey ? { Authorization: `Bearer ${candidate.apiKey}` } : {}) },
+          body: JSON.stringify({ model: candidate.model, temperature: 0.2, max_tokens: maxTokens, messages: summaryMessages }),
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (error: unknown) {
+        app.log.warn({ err: error, model: candidate.model, source: candidate.source, baseUrl: candidate.baseUrl }, "resumo por voz: endpoint inacessível; tentando próximo candidato");
+        failure = { kind: "network" };
+        break;
+      }
+      if (!upstream.ok) {
+        const detail = (await upstream.text()).slice(0, 300);
+        app.log.warn({ status: upstream.status, detail, model: candidate.model, source: candidate.source }, "resumo por voz: upstream falhou; tentando próximo candidato");
+        failure = { kind: "upstream", status: upstream.status, detail };
+        break;
+      }
+      const payload = record(await upstream.json());
+      const choices = Array.isArray(payload.choices) ? payload.choices : [];
+      const message = choices.length > 0 ? record(record(choices[0]).message) : {};
+      const summary = typeof message.content === "string" ? message.content.trim() : "";
+      if (summary) {
+        app.log.info({ model: candidate.model, source: candidate.source }, "resumo por voz: modelo usado");
+        return { summary, model: candidate.model, source: candidate.source };
+      }
+      app.log.warn({ model: candidate.model, maxTokens }, "resumo vazio (thinking consumiu o budget); tentando com mais tokens");
+      failure = { kind: "empty" };
     }
-    const payload = record(await upstream.json());
-    const choices = Array.isArray(payload.choices) ? payload.choices : [];
-    const message = choices.length > 0 ? record(record(choices[0]).message) : {};
-    const summary = typeof message.content === "string" ? message.content.trim() : "";
-    if (summary) return { summary };
-    app.log.warn({ model, maxTokens }, "resumo vazio (thinking consumiu o budget); tentando com mais tokens");
   }
-  throw Object.assign(new Error("LM Studio não retornou um resumo"), { code: "UPSTREAM_ERROR" });
+  if (failure?.kind === "network") throw Object.assign(new Error("Nenhum servidor disponível para o resumo por voz"), { code: "UNAVAILABLE" });
+  app.log.error({ failure }, "resumo por voz: todos os candidatos falharam");
+  return reply.code(502).send({ error: { code: "UPSTREAM_ERROR", message: "Não foi possível gerar o resumo por voz" } });
   });
 });
 const TTS_MAX_INPUT = 4000; // folga de chunking por requisição (aceito pelo backend TTS; mantido conservador para qualquer backend)
