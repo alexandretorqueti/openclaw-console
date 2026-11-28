@@ -106,3 +106,25 @@ test("janela de uso recente protege modelo tocado há pouco e libera após expir
   });
   assert.equal(liberado.length, 1);
 });
+
+test("minIdleMs protege ocioso de frações de segundo (idle entre turnos) e lastUsedTime desconhecido", () => {
+  const models = [
+    modelo({ identifier: "idle-ha-5s", lastUsedTime: baseOptions.now - 5_000 }),
+    modelo({ identifier: "sem-lastused", lastUsedTime: null }),
+    modelo({ identifier: "idle-exato-30s", lastUsedTime: baseOptions.now - 30_000 }),
+    modelo({ identifier: "idle-ha-2min", lastUsedTime: baseOptions.now - 120_000 }),
+  ];
+  const candidates = pickUnloadCandidates(models, { ...baseOptions, minIdleMs: 30_000 });
+  assert.deepEqual(candidates.map((model) => model.identifier), ["idle-ha-2min", "idle-exato-30s"]);
+});
+
+test("minIdleMs 0 ou ausente mantém comportamento antigo (null = nunca usado = candidato)", () => {
+  const models = [
+    modelo({ identifier: "sem-lastused", lastUsedTime: null }),
+    modelo({ identifier: "idle-ha-5s", lastUsedTime: baseOptions.now - 5_000 }),
+  ];
+  const legacy = pickUnloadCandidates(models, baseOptions);
+  assert.deepEqual(legacy.map((model) => model.identifier), ["sem-lastused", "idle-ha-5s"]);
+  const zero = pickUnloadCandidates(models, { ...baseOptions, minIdleMs: 0 });
+  assert.deepEqual(zero.map((model) => model.identifier), ["sem-lastused", "idle-ha-5s"]);
+});

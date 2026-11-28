@@ -214,6 +214,7 @@ const localModelManager = createLocalModelManager({
   ...(process.env.OPENCLAW_LMS_HOME?.trim() ? { lmsHome: process.env.OPENCLAW_LMS_HOME.trim() } : {}),
   ...(process.env.OPENCLAW_LMS_TTL_SECONDS !== undefined && process.env.OPENCLAW_LMS_TTL_SECONDS.trim() !== "" ? { ttlSeconds: Number.parseInt(process.env.OPENCLAW_LMS_TTL_SECONDS, 10) || 0 } : {}),
   ...(process.env.OPENCLAW_LMS_LOAD_TIMEOUT_MS?.trim() ? { loadTimeoutMs: Number.parseInt(process.env.OPENCLAW_LMS_LOAD_TIMEOUT_MS, 10) || undefined } : {}),
+  ...(process.env.OPENCLAW_LMS_MIN_IDLE_MS?.trim() && Number.isFinite(Number.parseInt(process.env.OPENCLAW_LMS_MIN_IDLE_MS, 10)) ? { minIdleMs: Number.parseInt(process.env.OPENCLAW_LMS_MIN_IDLE_MS, 10) } : {}),
   ...(process.env.OPENCLAW_LMS_PROTECTED_MODELS !== undefined ? { protectedModels: process.env.OPENCLAW_LMS_PROTECTED_MODELS.split(",").map((value) => value.trim()).filter(Boolean) } : {}),
   log: app.log,
   onProgress: (event) => sse("model", event),

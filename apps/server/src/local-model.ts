@@ -69,6 +69,14 @@ export interface LocalModelManagerOptions {
   maxUnloadsPerEnsure?: number;
   /** Janela em que um modelo usado pelo console fica protegido de despejo. Default: 90_000. */
   recentUseWindowMs?: number;
+  /**
+   * Ociosidade mínima (ms) segundo o `lastUsedTime` do próprio LM Studio antes
+   * de permitir o despejo — protege modelos entre turnos de agente (idle por
+   * frações de segundo) e qualquer consumidor fora do proxy (GUI etc.).
+   * Modelo sem `lastUsedTime` conhecido nunca é despejado. 0 desliga a regra.
+   * Default: 30_000.
+   */
+  minIdleMs?: number;
   /** Ids (identifier/modelKey, minúsculos) que nunca são descarregados. Default: embeddings. */
   protectedModels?: string[];
   log: LocalModelManagerLog;
@@ -113,6 +121,8 @@ export interface UnloadCandidateOptions {
   /** Id (minúsculo) → timestamp do último uso conhecido pelo console. */
   recentlyTouched: Map<string, number>;
   recentUseWindowMs: number;
+  /** Ociosidade mínima (ms) pelo lastUsedTime do LM Studio; 0/undefined = regra desligada. */
+  minIdleMs?: number;
   now: number;
 }
 
@@ -122,11 +132,15 @@ export interface UnloadCandidateOptions {
  * - nunca o alvo, nem protegidos (embeddings etc.);
  * - nem usados pelo console dentro da janela recente (protege turnos de agente
  *   que ficam idle entre tool calls);
+ * - com `minIdleMs > 0`: só modelos cujo `lastUsedTime` (do LM Studio, cobre
+ *   qualquer consumidor) está parado há pelo menos `minIdleMs`; sem
+ *   `lastUsedTime` conhecido → protegido (conservador);
  * - ordem: menos usado recentemente primeiro (LRU; nunca usado = mais antigo),
  *   desempate pelo maior tamanho (libera mais espaço por despejo).
  */
 export function pickUnloadCandidates(models: LoadedLocalModel[], options: UnloadCandidateOptions): LoadedLocalModel[] {
   const target = options.targetId.toLowerCase();
+  const minIdleMs = options.minIdleMs ?? 0;
   const candidates = models.filter((model) => {
     if (model.status !== "idle") return false;
     const ids = [model.identifier.toLowerCase(), model.modelKey.toLowerCase()];
@@ -134,6 +148,10 @@ export function pickUnloadCandidates(models: LoadedLocalModel[], options: Unload
     if (ids.some((id) => options.protectedIds.has(id))) return false;
     const touched = Math.max(...ids.map((id) => options.recentlyTouched.get(id) ?? 0));
     if (touched > 0 && options.now - touched < options.recentUseWindowMs) return false;
+    if (minIdleMs > 0) {
+      if (model.lastUsedTime === null) return false;
+      if (options.now - model.lastUsedTime < minIdleMs) return false;
+    }
     return true;
   });
   return candidates.sort((a, b) => (a.lastUsedTime ?? 0) - (b.lastUsedTime ?? 0) || b.sizeBytes - a.sizeBytes);
@@ -188,6 +206,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
   const loadTimeoutMs = options.loadTimeoutMs ?? 600_000;
   const maxUnloads = options.maxUnloadsPerEnsure ?? 3;
   const recentUseWindowMs = options.recentUseWindowMs ?? 90_000;
+  const minIdleMs = options.minIdleMs ?? 30_000;
   const log = options.log;
 
   const touched = new Map<string, number>();
@@ -321,16 +340,37 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
       protectedIds,
       recentlyTouched: touched,
       recentUseWindowMs,
+      minIdleMs,
       now: Date.now(),
     });
     if (candidates.length === 0) {
-      const detail = "nenhum modelo ocioso disponível para liberar memória";
+      const detail = minIdleMs > 0
+        ? `nenhum modelo ocioso há pelo menos ${Math.round(minIdleMs / 1000)}s disponível para liberar memória`
+        : "nenhum modelo ocioso disponível para liberar memória";
       progress(modelId, "failed", sessionKey, detail);
       throw Object.assign(new Error(`Não foi possível carregar o modelo local "${modelId}" (${detail}).`), { code: "UNAVAILABLE" });
     }
 
     let unloaded = 0;
     for (const candidate of candidates.slice(0, maxUnloads)) {
+      // Revalida IMEDIATAMENTE antes de despejar: entre a seleção e aqui o
+      // candidato pode ter recebido trabalho (o idle momentâneo entre turnos
+      // de agente não despeja mais — incidente 2026-11-28 reportado pelo Alexandre).
+      const fresh = await runLms(["ps", "--json"], 15_000);
+      if (fresh.failed) {
+        log.warn({ modelId }, "revalidação do lms ps falhou; abortando despejos por segurança");
+        break;
+      }
+      const candidateId = candidate.identifier.toLowerCase();
+      const freshModel = parseLmsPs(safeJsonParse(fresh.stdout)).find((model) => model.identifier.toLowerCase() === candidateId || model.modelKey.toLowerCase() === candidateId);
+      const stillEligible = freshModel
+        ? pickUnloadCandidates([freshModel], { targetId: modelId, protectedIds, recentlyTouched: touched, recentUseWindowMs, minIdleMs, now: Date.now() }).length === 1
+        : false;
+      if (!stillEligible) {
+        log.info({ modelId, skipped: candidate.identifier }, "candidato voltou a ser usado/inelegível; pulando despejo");
+        progress(modelId, "freeing", sessionKey, `pulando ${candidate.identifier} (voltou a ser usado)`);
+        continue;
+      }
       progress(modelId, "freeing", sessionKey, `descarregando ${candidate.identifier}`);
       const result = await runLms(["unload", candidate.identifier], 30_000);
       if (result.failed) {
