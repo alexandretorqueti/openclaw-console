@@ -23,6 +23,7 @@ import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
 import { completionsUrl, createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, summaryCandidates, type LocalModelInfo } from "./voice.js";
 import { createLocalModelManager } from "./local-model.js";
+import { registerLmstudioProxy } from "./lmstudio-proxy.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
@@ -216,6 +217,28 @@ const localModelManager = createLocalModelManager({
   ...(process.env.OPENCLAW_LMS_PROTECTED_MODELS !== undefined ? { protectedModels: process.env.OPENCLAW_LMS_PROTECTED_MODELS.split(",").map((value) => value.trim()).filter(Boolean) } : {}),
   log: app.log,
   onProgress: (event) => sse("model", event),
+});
+
+// Proxy canônico Gateway → LM Studio (ver lmstudio-proxy.ts): TODO o tráfego
+// de inferência local (console, tarefas, cron, qualquer agente) passa pelo
+// ensure() — carga com contexto cheio + evicção de ociosos + split multi-GPU
+// do LM Studio. Fica ativo já; para o Gateway usá-lo, o baseUrl do provider
+// lmstudio precisa apontar para http://host.docker.internal:6280/lmstudio/v1
+// (mudança de config do OpenClaw — aprovação do Alexandre).
+const lmstudioProxyTokens = [
+  ...(process.env.OPENCLAW_LMSTUDIO_PROXY_TOKEN?.trim() ? [process.env.OPENCLAW_LMSTUDIO_PROXY_TOKEN.trim()] : []),
+  lmstudioApiKey || "lm-studio",
+];
+void registerLmstudioProxy(app, {
+  prefix: "/lmstudio",
+  targetUrl: lmstudioUrl,
+  tokens: lmstudioProxyTokens,
+  ensure: (modelId) => localModelManager.ensure(modelId),
+  hasModel: async (modelId) => {
+    const lower = modelId.toLowerCase();
+    return (await localModels()).some((item) => item.id.toLowerCase() === lower);
+  },
+  log: app.log,
 });
 
 gateway.on("status", (_connection: GatewayConnectionStatus) => sse("status", status()));
