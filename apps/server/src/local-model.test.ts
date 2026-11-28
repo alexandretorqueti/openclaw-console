@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { localModelIdFromRef, parseLmsPs, pickUnloadCandidates, type LoadedLocalModel } from "./local-model.js";
+import { isLmsInfraFailure, localModelIdFromRef, parseLmsPs, pickUnloadCandidates, type LoadedLocalModel } from "./local-model.js";
+
+test("isLmsInfraFailure distingue falha de descoberta de falta de recursos", () => {
+  assert.equal(isLmsInfraFailure("Error: No running LM Studio or Bionic app, and no valid installation was found."), true);
+  assert.equal(isLmsInfraFailure("Error: Failed to start or connect to a local LM Studio or Bionic API server."), true);
+  assert.equal(isLmsInfraFailure("Insufficient resources to load model"), false);
+  assert.equal(isLmsInfraFailure("Model not found"), false);
+  assert.equal(isLmsInfraFailure(""), false);
+});
 
 test("localModelIdFromRef só aceita providers locais", () => {
   assert.equal(localModelIdFromRef("lmstudio/qwen3.8-flash-next@q4_k_xl"), "qwen3.8-flash-next@q4_k_xl");

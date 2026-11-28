@@ -18,6 +18,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -153,6 +154,16 @@ function safeJsonParse(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return undefined; }
 }
 
+/**
+ * Saída do `lms` indica falha de INFRAESTRUTURA de descoberta (servidor
+ * inalcançável / instalação não encontrada) em vez de falta de recursos?
+ * Nesse caso a preparação degrada para o comportamento antigo (carga JIT do
+ * Gateway) em vez de bloquear o envio com 503.
+ */
+export function isLmsInfraFailure(output: string): boolean {
+  return /No running LM Studio|Failed to start or connect|no valid installation/i.test(output);
+}
+
 export function createLocalModelManager(options: LocalModelManagerOptions): LocalModelManager {
   const lmsPath = options.lmsPath?.trim() || resolve(homedir(), ".lmstudio", "bin", "lms");
   // `lms` descobre o servidor via $HOME/.lmstudio → HOME deve ser o pai do dir.
@@ -190,7 +201,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
   async function runLms(args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string; failed: boolean }> {
     try {
       const { stdout, stderr } = await execFileAsync(lmsPath, args, {
-        env: { ...process.env, HOME: lmsHome },
+        env: await buildLmsEnv(),
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
       });
@@ -199,6 +210,39 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
       const failure = error as { stdout?: string; stderr?: string; message?: string };
       return { stdout: failure.stdout ?? "", stderr: failure.stderr ?? failure.message ?? String(error), failed: true };
     }
+  }
+
+  // Dentro do container, a descoberta padrão do `lms` falha: ele lê
+  // `.internal/http-server.json` (ou apps/bionic/.internal/) que contém o `pid`
+  // do daemon, e o cheque de vida `process.kill(pid, 0)` não enxerga PIDs do
+  // host a partir do namespace do container. Solução: gerar uma cópia do info
+  // file SEM pid (campo opcional no schema do lms) na MESMA pasta (o dirname do
+  // arquivo vira o internalFolder usado pela autenticação local privilegiada)
+  // e apontar `LMS_API_SERVER_INFO_PATH` para ela. A porta é dinâmica (mudou p/
+  // 37799 num restart observado) → relê a origem toda vez; sem o arquivo de
+  // origem, mantém o ambiente como está.
+  async function buildLmsEnv(): Promise<NodeJS.ProcessEnv> {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: lmsHome };
+    if (env.LMS_API_SERVER_INFO_PATH) return env; // configuração explícita vence
+    const lmstudioDir = resolve(lmsHome, ".lmstudio");
+    const candidates = [
+      resolve(lmstudioDir, "apps", "bionic", ".internal", "http-server.json"),
+      resolve(lmstudioDir, ".internal", "http-server.json"),
+    ];
+    for (const source of candidates) {
+      const info = safeJsonParse(await readFile(source, "utf8").catch(() => "")) as { port?: number; host?: string } | undefined;
+      if (!info || typeof info.port !== "number") continue;
+      const stripped = resolve(dirname(source), "http-server-nopid.json");
+      const content = JSON.stringify({ port: info.port, ...(typeof info.host === "string" ? { host: info.host } : {}) });
+      const existing = await readFile(stripped, "utf8").catch(() => "");
+      if (existing !== content) {
+        await writeFile(stripped, content, "utf8").catch((error) => {
+          log.warn({ stripped, error: String(error) }, "não foi possível gravar info file sem pid do lms");
+        });
+      }
+      if (existsSync(stripped)) return { ...env, LMS_API_SERVER_INFO_PATH: stripped };
+    }
+    return env;
   }
 
   async function httpStates(): Promise<Map<string, string>> {
@@ -224,7 +268,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
     return (await httpStates()).get(modelId.toLowerCase()) === "loaded";
   }
 
-  async function attemptLoad(modelId: string): Promise<boolean> {
+  async function attemptLoad(modelId: string): Promise<{ loaded: boolean; infraFailure: boolean }> {
     const args = ["load", modelId, "-y"];
     if (ttlSeconds > 0) args.push("--ttl", String(ttlSeconds));
     const result = await runLms(args, loadTimeoutMs);
@@ -233,7 +277,8 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
     }
     // O CLI pode estourar timeout com a carga ainda em andamento no app; o
     // estado HTTP é a fonte de verdade.
-    return isLoaded(modelId);
+    const loaded = await isLoaded(modelId);
+    return { loaded, infraFailure: !loaded && isLmsInfraFailure(`${result.stdout}${result.stderr}`) };
   }
 
   async function ensureOnce(modelId: string, sessionKey?: string): Promise<void> {
@@ -242,14 +287,25 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
 
     progress(modelId, "loading", sessionKey);
     log.info({ modelId }, "modelo local não carregado: iniciando carga via lms");
-    if (await attemptLoad(modelId)) {
+    const attempt = await attemptLoad(modelId);
+    if (attempt.loaded) {
       progress(modelId, "ready", sessionKey);
+      return;
+    }
+    if (attempt.infraFailure) {
+      // lms não alcança o daemon (ex.: descasamento de versão/endereço): não
+      // bloqueia o envio — o Gateway ainda tenta a carga JIT como antes.
+      log.warn({ modelId }, "lms não conseguiu falar com o servidor local; seguindo sem preparação (carga JIT do Gateway)");
       return;
     }
 
     // Carga falhou → despejar ociosos (passos 2–4 do fluxo pedido).
     progress(modelId, "freeing", sessionKey);
     const ps = await runLms(["ps", "--json"], 15_000);
+    if (ps.failed && isLmsInfraFailure(`${ps.stdout}${ps.stderr}`)) {
+      log.warn({ modelId }, "lms ps inacessível; seguindo sem preparação (carga JIT do Gateway)");
+      return;
+    }
     const loaded = parseLmsPs(safeJsonParse(ps.stdout));
     const candidates = pickUnloadCandidates(loaded, {
       targetId: modelId,
@@ -277,7 +333,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
       }
       unloaded += 1;
       log.info({ modelId, evicted: candidate.identifier, sizeBytes: candidate.sizeBytes }, "modelo ocioso descarregado para liberar memória");
-      if (await attemptLoad(modelId)) {
+      if ((await attemptLoad(modelId)).loaded) {
         progress(modelId, "ready", sessionKey);
         return;
       }
