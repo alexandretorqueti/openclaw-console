@@ -22,6 +22,7 @@ import { buildVramPatch, ollamaModelRef, readNumGpu, shouldApplyVramPatch } from
 import { loadOrCreateDeviceIdentity } from "./device-identity.js";
 import { ensureProjectsLink } from "./workspace-project-link.js";
 import { createVoiceQueue, createVoiceWarmer, isPhononModel, pickSummaryModel, type LocalModelInfo } from "./voice.js";
+import { createLocalModelManager } from "./local-model.js";
 
 const port = Number.parseInt(process.env.PORT ?? "47831", 10);
 const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL ?? "ws://openclaw:18789";
@@ -194,10 +195,28 @@ function redactGatewayUrl(value: string) {
   try { const url = new URL(value); url.username = ""; url.password = ""; for (const key of [...url.searchParams.keys()]) if (/token|password|secret|key/i.test(key)) url.searchParams.set(key, "***"); return url.toString(); }
   catch { return "gateway"; }
 }
-function sse(event: "chat" | "activity" | "status" | "sessions", data: unknown) {
+function sse(event: "chat" | "activity" | "status" | "sessions" | "model", data: unknown) {
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of sseClients) { try { client.write(frame); } catch { sseClients.delete(client); } }
 }
+
+// Preparação de modelos locais (LM Studio) antes do chat.send: carrega o modelo
+// pedido e, se a carga falhar por falta de recursos, descarrega modelos ociosos
+// (idle no `lms ps`) e tenta de novo — o LM Studio não evacua residentes em
+// falha de carga. Progresso vai ao front via SSE `model`. Sem o binário `lms`
+// no ambiente (dev fora do container), a preparação é pulada e o comportamento
+// antigo (carga JIT do Gateway) permanece.
+const localModelManager = createLocalModelManager({
+  lmstudioUrl,
+  apiKey: lmstudioApiKey,
+  ...(process.env.OPENCLAW_LMS_PATH?.trim() ? { lmsPath: process.env.OPENCLAW_LMS_PATH.trim() } : {}),
+  ...(process.env.OPENCLAW_LMS_HOME?.trim() ? { lmsHome: process.env.OPENCLAW_LMS_HOME.trim() } : {}),
+  ...(process.env.OPENCLAW_LMS_TTL_SECONDS !== undefined && process.env.OPENCLAW_LMS_TTL_SECONDS.trim() !== "" ? { ttlSeconds: Number.parseInt(process.env.OPENCLAW_LMS_TTL_SECONDS, 10) || 0 } : {}),
+  ...(process.env.OPENCLAW_LMS_LOAD_TIMEOUT_MS?.trim() ? { loadTimeoutMs: Number.parseInt(process.env.OPENCLAW_LMS_LOAD_TIMEOUT_MS, 10) || undefined } : {}),
+  ...(process.env.OPENCLAW_LMS_PROTECTED_MODELS !== undefined ? { protectedModels: process.env.OPENCLAW_LMS_PROTECTED_MODELS.split(",").map((value) => value.trim()).filter(Boolean) } : {}),
+  log: app.log,
+  onProgress: (event) => sse("model", event),
+});
 
 gateway.on("status", (_connection: GatewayConnectionStatus) => sse("status", status()));
 gateway.on("connected", () => { gatewayError = undefined; sse("status", status()); void gateway.request("sessions.subscribe", {}).catch((error: unknown) => { app.log.warn({ err: error }, "failed to subscribe to session changes"); }); });
@@ -631,6 +650,11 @@ app.post("/api/chat/send", async (request) => {
   // schema fechado e rejeitaria campos extras, então são removidos do payload.
   const { vram, modelRef, ...chatParams } = body;
   if (vram !== undefined) await applyVramLoading(vram, modelRef);
+  // Provider local (lmstudio/*): garante o modelo carregado ANTES de acionar o
+  // Gateway — se a carga falhar, despeja ociosos e tenta de novo; falha final
+  // vira 503 claro em vez de run travado em OOM no agente.
+  const localModelId = localModelManager.idFromRef(modelRef);
+  if (localModelId) await localModelManager.ensure(localModelId, body.sessionKey);
   const payload = record(await rpc("chat.send", { ...chatParams, agentId: canonicalAgentId(body.sessionKey, body.agentId), idempotencyKey: body.idempotencyKey ?? randomUUID() }));
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   if (!runId) throw new Error("Gateway did not return a runId");

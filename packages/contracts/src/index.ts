@@ -234,6 +234,21 @@ export const ChatActivityEventSchema = z
   .strict();
 export type ChatActivityEvent = z.infer<typeof ChatActivityEventSchema>;
 
+// Progresso da preparação de modelo local (LM Studio) feita pelo BFF antes de
+// encaminhar o chat.send: carrega o modelo pedido e, em falha por falta de
+// recursos, descarrega modelos ociosos (idle) e tenta de novo. O front usa o
+// evento para mostrar um banner de progresso; `failed` também chega ao front
+// como erro HTTP 503 do /api/chat/send.
+export const ModelPreparingEventSchema = z
+  .object({
+    sessionKey: z.string().trim().min(1).optional(),
+    modelId: z.string().trim().min(1).max(200),
+    stage: z.enum(["loading", "freeing", "ready", "failed"]),
+    detail: z.string().trim().max(400).optional(),
+  })
+  .strict();
+export type ModelPreparingEvent = z.infer<typeof ModelPreparingEventSchema>;
+
 export const ApiErrorSchema = z
   .object({
     error: z

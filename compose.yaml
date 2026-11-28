@@ -22,3 +22,8 @@ services:
     volumes:
       - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/containers/openclaw/openclaw_state}/console-state:/data/state
       - ${OPENCLAW_STATE_DIR_HOST:-/home/alexandre/containers/openclaw/openclaw_state}:/data/.openclaw:rw,z
+      # CLI `lms` + estado do LM Studio: preparação de modelos locais com
+      # evicção de ociosos (apps/server/src/local-model.ts). O `lms` descobre o
+      # servidor via $HOME/.lmstudio; o container roda como uid 1000 (node),
+      # mesmo dono dos arquivos no host. rw: o lms escreve estado interno.
+      - ${OPENCLAW_LMSTUDIO_HOME_HOST:-/home/alexandre/.lmstudio}:/home/node/.lmstudio

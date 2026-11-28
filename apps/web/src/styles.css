@@ -106,6 +106,8 @@ button, input, textarea { font: inherit; }
 .empty-chat, .empty-thread { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #747d9a; text-align: center; }
 .loading-chat { min-height: 240px; display: grid; place-items: center; color: #7c6df2; }
 .floating-error { position: fixed !important; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(620px, calc(100vw - 32px)); z-index: 30; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.floating-model { position: fixed !important; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(620px, calc(100vw - 32px)); z-index: 31; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.floating-error + .floating-model, .floating-model:has(+ .floating-error) { bottom: 84px; }
 
 .chat-pane { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto 1fr auto; background: rgba(10, 15, 29, .34); }
 .chat-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 72px; padding: 13px 22px; border-bottom: 1px solid rgba(130, 141, 177, .13); backdrop-filter: blur(14px); }

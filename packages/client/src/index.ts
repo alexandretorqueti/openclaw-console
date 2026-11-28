@@ -9,6 +9,7 @@ import {
   ChatAbortResponseSchema,
   ChatActivityEventSchema,
   ChatEventSchema,
+  ModelPreparingEventSchema,
   ChatHistoryQuerySchema,
   ChatHistoryResponseSchema,
   ChatMessageGetQuerySchema,
@@ -42,6 +43,7 @@ import {
   type ChatAbortResponse,
   type ChatActivityEvent,
   type ChatEvent,
+  type ModelPreparingEvent,
   type ChatHistoryQuery,
   type ChatHistoryResponse,
   type ChatMessageGetQuery,
@@ -82,6 +84,7 @@ export interface ConsoleClientOptions {
 export interface ConsoleEventHandlers {
   onChat?: (event: ChatEvent) => void;
   onActivity?: (event: ChatActivityEvent) => void;
+  onModel?: (event: ModelPreparingEvent) => void;
   onStatus?: (status: GatewayStatus) => void;
   onSessions?: (event: SessionChangedEvent) => void;
   onOpen?: () => void;
@@ -239,6 +242,7 @@ export class OpenClawConsoleClient {
     const source = new this.EventSourceImpl(this.authToken ? `${eventsUrl}?token=${encodeURIComponent(this.authToken)}` : eventsUrl);
     const chat = (event: MessageEvent<string>) => this.handleSseData(event.data, ChatEventSchema, handlers.onChat, handlers.onError);
     const activity = (event: MessageEvent<string>) => this.handleSseData(event.data, ChatActivityEventSchema, handlers.onActivity, handlers.onError);
+    const model = (event: MessageEvent<string>) => this.handleSseData(event.data, ModelPreparingEventSchema, handlers.onModel, handlers.onError);
     const status = (event: MessageEvent<string>) =>
       this.handleSseData(event.data, GatewayStatusSchema, handlers.onStatus, handlers.onError);
     const sessions = (event: MessageEvent<string>) =>
@@ -247,6 +251,7 @@ export class OpenClawConsoleClient {
     const error = (event: Event) => handlers.onError?.(event);
     source.addEventListener("chat", chat as EventListener);
     source.addEventListener("activity", activity as EventListener);
+    source.addEventListener("model", model as EventListener);
     source.addEventListener("status", status as EventListener);
     source.addEventListener("sessions", sessions as EventListener);
     source.addEventListener("open", open);
@@ -254,6 +259,7 @@ export class OpenClawConsoleClient {
     return () => {
       source.removeEventListener("chat", chat as EventListener);
       source.removeEventListener("activity", activity as EventListener);
+      source.removeEventListener("model", model as EventListener);
       source.removeEventListener("status", status as EventListener);
       source.removeEventListener("sessions", sessions as EventListener);
       source.removeEventListener("open", open);
