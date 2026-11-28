@@ -43,6 +43,7 @@ test("proxyTarget preserva path e query", () => {
 interface Harness {
   app: ReturnType<typeof Fastify>;
   ensured: string[];
+  touched: string[];
   failEnsure: boolean;
   upstreamHits: { method: string; url: string }[];
   close: () => Promise<void>;
@@ -66,9 +67,11 @@ async function startHarness(): Promise<Harness> {
   const port = (upstream.address() as { port: number }).port;
   const app = Fastify();
   const ensured: string[] = [];
+  const touched: string[] = [];
   const harness: Harness = {
     app,
     ensured,
+    touched,
     failEnsure: false,
     upstreamHits: hits,
     close: async () => {
@@ -85,6 +88,9 @@ async function startHarness(): Promise<Harness> {
       ensured.push(modelId);
     },
     hasModel: async (modelId) => modelId !== "desconhecido",
+    touch: (modelId) => {
+      touched.push(modelId);
+    },
     log: { info: () => {}, warn: () => {} },
   });
   await app.ready();
@@ -129,6 +135,20 @@ test("proxy: completions garante o modelo e repassa o SSE do alvo", async () => 
     assert.match(response.body, /data: ola/);
     assert.deepEqual(h.ensured, ["m1"]);
     assert.deepEqual(h.upstreamHits, [{ method: "POST", url: "/v1/chat/completions" }]);
+  } finally { await h.close(); }
+});
+
+test("proxy: touch na conclusão da resposta (geração longa não expira a proteção)", async () => {
+  const h = await startHarness();
+  try {
+    const response = await h.app.inject({
+      method: "POST",
+      url: "/lmstudio/v1/chat/completions",
+      headers: { authorization: "Bearer tok123" },
+      payload: { model: "m1", messages: [] },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(h.touched, ["m1"]);
   } finally { await h.close(); }
 });
 

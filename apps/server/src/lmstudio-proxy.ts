@@ -94,6 +94,8 @@ export interface LmstudioProxyDeps {
   tokens: string[];
   /** Garante o modelo carregado (mesma fila serializada do chat do console). */
   ensure: (modelId: string) => Promise<void>;
+  /** Marca uso recente na conclusão da resposta (protege contra despejo). */
+  touch?: (modelId: string) => void;
   /** O modelo existe no catálogo local? (desconhecidos → passthrough puro) */
   hasModel: (modelId: string) => Promise<boolean>;
   log: LmstudioProxyLog;
@@ -194,6 +196,9 @@ export async function registerLmstudioProxy(app: FastifyInstance, deps: Lmstudio
       // cliente desconectou / stream interrompido — sem ação
     } finally {
       raw.end();
+      // Touch na CONCLUSÃO da resposta: gerações longas (minutos) não deixam
+      // o registro de uso recente expirar no meio do turno do agente.
+      if (bodyModel) deps.touch?.(bodyModel);
     }
   });
 }

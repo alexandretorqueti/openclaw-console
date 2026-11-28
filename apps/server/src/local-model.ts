@@ -67,7 +67,12 @@ export interface LocalModelManagerOptions {
   loadTimeoutMs?: number;
   /** Máximo de modelos ociosos descarregados por tentativa. Default: 3. */
   maxUnloadsPerEnsure?: number;
-  /** Janela em que um modelo usado pelo console fica protegido de despejo. Default: 90_000. */
+  /**
+   * Janela em que um modelo usado pelo console/proxy fica protegido de despejo.
+   * Precisa cobrir os gaps ENTRE turnos de agente (tool calls, builds, testes,
+   * retry/backoff) — incidente 2026-11-28: flash-next 125B despejado com o
+   * agente ativo porque o gap passou de 90s. Default: 600_000 (10min).
+   */
   recentUseWindowMs?: number;
   /**
    * Ociosidade mínima (ms) segundo o `lastUsedTime` do próprio LM Studio antes
@@ -205,7 +210,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
   const ttlSeconds = options.ttlSeconds ?? 3600;
   const loadTimeoutMs = options.loadTimeoutMs ?? 600_000;
   const maxUnloads = options.maxUnloadsPerEnsure ?? 3;
-  const recentUseWindowMs = options.recentUseWindowMs ?? 90_000;
+  const recentUseWindowMs = options.recentUseWindowMs ?? 600_000;
   const minIdleMs = options.minIdleMs ?? 30_000;
   const log = options.log;
 
