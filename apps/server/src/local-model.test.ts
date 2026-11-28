@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isLmsInfraFailure, localModelIdFromRef, parseLmsPs, pickUnloadCandidates, type LoadedLocalModel } from "./local-model.js";
+import { isLmsInfraFailure, lmsInfoFileCandidates, localModelIdFromRef, parseLmsPs, pickUnloadCandidates, type LoadedLocalModel } from "./local-model.js";
+
+test("lmsInfoFileCandidates deriva do HOME que contém .lmstudio (bionic primeiro)", () => {
+  assert.deepEqual(lmsInfoFileCandidates("/home/node"), [
+    "/home/node/.lmstudio/apps/bionic/.internal/http-server.json",
+    "/home/node/.lmstudio/.internal/http-server.json",
+  ]);
+});
 
 test("isLmsInfraFailure distingue falha de descoberta de falta de recursos", () => {
   assert.equal(isLmsInfraFailure("Error: No running LM Studio or Bionic app, and no valid installation was found."), true);

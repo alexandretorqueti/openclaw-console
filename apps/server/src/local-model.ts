@@ -139,6 +139,18 @@ export function pickUnloadCandidates(models: LoadedLocalModel[], options: Unload
   return candidates.sort((a, b) => (a.lastUsedTime ?? 0) - (b.lastUsedTime ?? 0) || b.sizeBytes - a.sizeBytes);
 }
 
+/**
+ * Caminhos candidatos do info file do daemon (bionic primeiro), a partir do
+ * HOME que contém o diretório `.lmstudio`. Exportado para teste.
+ */
+export function lmsInfoFileCandidates(lmsHome: string): string[] {
+  const lmstudioDir = resolve(lmsHome, ".lmstudio");
+  return [
+    resolve(lmstudioDir, "apps", "bionic", "\.internal", "http-server.json"),
+    resolve(lmstudioDir, ".internal", "http-server.json"),
+  ];
+}
+
 export interface LocalModelManager {
   /** Id local a partir de `provedor/id`; undefined se não for provider local. */
   idFromRef(modelRef: string | undefined): string | undefined;
@@ -166,8 +178,10 @@ export function isLmsInfraFailure(output: string): boolean {
 
 export function createLocalModelManager(options: LocalModelManagerOptions): LocalModelManager {
   const lmsPath = options.lmsPath?.trim() || resolve(homedir(), ".lmstudio", "bin", "lms");
-  // `lms` descobre o servidor via $HOME/.lmstudio → HOME deve ser o pai do dir.
-  const lmsHome = options.lmsHome?.trim() || dirname(dirname(lmsPath));
+  // `lms` descobre o servidor via $HOME/.lmstudio → HOME é o diretório que
+  // CONTÉM `.lmstudio` (não derivar do caminho do binário: bin vive em
+  // `.lmstudio/bin/lms`, dois dirnames cairiam no próprio `.lmstudio`).
+  const lmsHome = options.lmsHome?.trim() || homedir();
   const providers = options.providers ?? DEFAULT_PROVIDERS;
   const protectedIds = new Set((options.protectedModels ?? DEFAULT_PROTECTED).map((id) => id.toLowerCase()));
   const ttlSeconds = options.ttlSeconds ?? 3600;
@@ -224,12 +238,7 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
   async function buildLmsEnv(): Promise<NodeJS.ProcessEnv> {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: lmsHome };
     if (env.LMS_API_SERVER_INFO_PATH) return env; // configuração explícita vence
-    const lmstudioDir = resolve(lmsHome, ".lmstudio");
-    const candidates = [
-      resolve(lmstudioDir, "apps", "bionic", ".internal", "http-server.json"),
-      resolve(lmstudioDir, ".internal", "http-server.json"),
-    ];
-    for (const source of candidates) {
+    for (const source of lmsInfoFileCandidates(lmsHome)) {
       const info = safeJsonParse(await readFile(source, "utf8").catch(() => "")) as { port?: number; host?: string } | undefined;
       if (!info || typeof info.port !== "number") continue;
       const stripped = resolve(dirname(source), "http-server-nopid.json");
