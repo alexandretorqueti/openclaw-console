@@ -101,7 +101,22 @@ export interface LmstudioProxyDeps {
 
 export async function registerLmstudioProxy(app: FastifyInstance, deps: LmstudioProxyDeps): Promise<void> {
   app.all(`${deps.prefix}/*`, { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {
-    if (!isProxyAuthorized(request.headers.authorization, deps.tokens)) {
+    const authorized = isProxyAuthorized(request.headers.authorization, deps.tokens);
+    // Diagnóstico (incidente 2026-11-28: 401 intermitente com header correto):
+    // fingerprint sem segredo — comprimento e prefixo do header recebido e
+    // tamanhos dos tokens aceitos.
+    const authHeader = typeof request.headers.authorization === "string" ? request.headers.authorization : "";
+    deps.log.info({
+      method: request.method,
+      path: request.url.split("?")[0],
+      authLen: authHeader.length,
+      authPrefix: authHeader.slice(0, 7),
+      headerKeys: Object.keys(request.headers).length,
+      tokenLens: deps.tokens.map((value) => value.length),
+      authorized,
+      remote: request.socket?.remoteAddress,
+    }, "lmstudio-proxy: auth check");
+    if (!authorized) {
       return reply.code(401).send({ error: { code: "UNAUTHORIZED", message: "token inválido para o proxy do LM Studio" } });
     }
     const path = stripProxyPrefix(request.url, deps.prefix);
