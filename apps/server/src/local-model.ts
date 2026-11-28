@@ -277,8 +277,8 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
     return (await httpStates()).get(modelId.toLowerCase()) === "loaded";
   }
 
-  async function attemptLoad(modelId: string, extraArgs: string[] = []): Promise<{ loaded: boolean; infraFailure: boolean }> {
-    const args = ["load", modelId, "-y", ...extraArgs];
+  async function attemptLoad(modelId: string): Promise<{ loaded: boolean; infraFailure: boolean }> {
+    const args = ["load", modelId, "-y"];
     if (ttlSeconds > 0) args.push("--ttl", String(ttlSeconds));
     const result = await runLms(args, loadTimeoutMs);
     if (result.failed) {
@@ -288,20 +288,6 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
     // estado HTTP é a fonte de verdade.
     const loaded = await isLoaded(modelId);
     return { loaded, infraFailure: !loaded && isLmsInfraFailure(`${result.stdout}${result.stderr}`) };
-  }
-
-  // Último recurso quando a carga padrão falha por memória (kv cache/compute
-  // buffers): --auto deixa o LM Studio reduzir o contexto e redistribuir o
-  // placement pelos dispositivos disponíveis (caso real de 2026-11-28: o
-  // 27b-turbo-MTP não coube numa GPU só mesmo após evicção; --auto carregou
-  // com contexto 262144→75776). Trade-off: contexto menor em troca de a
-  // tarefa rodar.
-  async function attemptLoadAuto(modelId: string, sessionKey?: string): Promise<boolean> {
-    progress(modelId, "loading", sessionKey, "repetindo com ajuste automático de recursos (--auto)");
-    log.warn({ modelId }, "carga padrão falhou por recursos; tentando lms load --auto");
-    const auto = await attemptLoad(modelId, ["--auto"]);
-    if (auto.loaded) progress(modelId, "ready", sessionKey);
-    return auto.loaded;
   }
 
   async function ensureOnce(modelId: string, sessionKey?: string): Promise<void> {
@@ -338,7 +324,6 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
       now: Date.now(),
     });
     if (candidates.length === 0) {
-      if (await attemptLoadAuto(modelId, sessionKey)) return;
       const detail = "nenhum modelo ocioso disponível para liberar memória";
       progress(modelId, "failed", sessionKey, detail);
       throw Object.assign(new Error(`Não foi possível carregar o modelo local "${modelId}" (${detail}).`), { code: "UNAVAILABLE" });
@@ -362,9 +347,6 @@ export function createLocalModelManager(options: LocalModelManagerOptions): Loca
         return;
       }
     }
-
-    // Evicção não bastou → --auto como último recurso antes do 503.
-    if (await attemptLoadAuto(modelId, sessionKey)) return;
 
     const detail = `${unloaded} modelo(s) ocioso(s) liberado(s) sem sucesso na carga`;
     progress(modelId, "failed", sessionKey, detail);
